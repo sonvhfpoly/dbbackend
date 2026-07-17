@@ -1,0 +1,53 @@
+from fastapi import APIRouter, BackgroundTasks, Depends
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from core.database import get_db
+from .schemas import (
+    SkillRead, SkillCreate, CareerRead, CareerCreate, JobPostingCreate,
+    MarketTrend, SkillDemandTrend,
+)
+from .service import MarketService
+
+router = APIRouter(
+    prefix="/market",
+    tags=["Market Data"]
+)
+
+@router.post("/skills/", response_model=SkillRead, summary="Register a skill")
+def create_skill(skill: SkillCreate, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.create_skill(skill)
+
+@router.get("/careers/", response_model=List[CareerRead], summary="List careers, optionally filtered by market trend")
+def list_careers(trend: Optional[MarketTrend] = None, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.get_all_careers(trend.value if trend else None)
+
+@router.post("/careers/", response_model=CareerRead, summary="Register a career and the skills used to track its demand")
+def create_career(career: CareerCreate, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.create_career(career)
+
+@router.post("/jobs/bulk", summary="Bulk-ingest job postings and refresh career market trends")
+def bulk_ingest_jobs(jobs: List[JobPostingCreate], background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    count = service.ingest_jobs(jobs)
+    # Recompute Career.market_trend from the freshly ingested data instead of
+    # blocking the response on it (plan: 30-day growth rate automation).
+    background_tasks.add_task(service.update_market_trends)
+    return {"message": f"Successfully ingested {count} jobs"}
+
+@router.get("/analytics/skill-demand", summary="Raw skill demand count for a location")
+def get_skill_demand(location: str, days: Optional[int] = None, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.get_demand_analytics(location, days)
+
+@router.get(
+    "/analytics/skill-trend",
+    response_model=List[SkillDemandTrend],
+    summary="Skill demand growth for a location",
+    description="Compares job-posting demand per skill across two equal-length back-to-back windows to surface rising/declining and shortage signals per region.",
+)
+def get_skill_demand_trend(location: str, window_days: int = 30, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.get_demand_trend(location, window_days)

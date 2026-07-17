@@ -1,0 +1,44 @@
+from fastapi import FastAPI
+from core.database import Base, engine
+from core.config import settings
+from domains.market.router import router as market_router
+
+# Import every domain's models so their tables are registered on Base.metadata
+# before create_all runs, even for domains without a router wired up yet.
+from domains.market import models as market_models  # noqa: F401
+from domains.student import models as student_models  # noqa: F401
+from domains.guidance import models as guidance_models  # noqa: F401
+
+Base.metadata.create_all(bind=engine)
+
+tags_metadata = [
+    {
+        "name": "Market Data",
+        "description": "Job market signals extracted from job postings: skill demand, salary ranges, "
+                       "and regional growth/shortage trends over time.",
+    },
+    {
+        "name": "Student Profile",
+        "description": "Student competency and interest profiles built up through interaction, "
+                       "not collapsed into a single personality-test result.",
+    },
+    {
+        "name": "AI Guidance",
+        "description": "Personalized, explainable learning and career path recommendations "
+                       "(university, vocational, and alternative routes).",
+    },
+]
+
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    description="API phân tích thị trường tuyển dụng và đề xuất lộ trình học tập, "
+                 "nghề nghiệp cá nhân hóa cho học sinh/sinh viên.",
+    version=settings.VERSION,
+    openapi_tags=tags_metadata,
+)
+
+app.include_router(market_router)
+
+@app.get("/")
+def read_root():
+    return {"message": f"Welcome to the {settings.PROJECT_NAME} API"}
