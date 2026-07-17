@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -8,6 +9,13 @@ class Settings(BaseSettings):
     # Guards data-mutating dev/demo endpoints (e.g. /market/seed-demo-data).
     # Set to false via env var in production deployments.
     ENABLE_SEED_ENDPOINT: bool = True
+
+    # FPT Cloud Marketplace chat-completions API (OpenAI-compatible), used by
+    # domains/chatbot. Optional (unlike DATABASE_URL): the rest of the app must
+    # keep working even if the chatbot isn't configured yet in this environment.
+    FPT_CLOUD_API_KEY: Optional[str] = None
+    FPT_CLOUD_BASE_URL: str = "https://mkp-api.fptcloud.com"
+    FPT_CLOUD_CHAT_MODEL: str = "gemma-4-31B-it"
 
     # Path is resolved relative to the process's current working directory,
     # not this file — the app must be run with cwd=app/ (see README) or this

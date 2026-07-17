@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "passlib[bcrypt]>=1.7",
+    "requests>=2.34.2",
 ]
 
 [tool.uv]

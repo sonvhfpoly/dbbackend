@@ -2,9 +2,11 @@ from fastapi import FastAPI
 from core.database import Base, engine
 from core.config import settings
 from domains.market.router import router as market_router
+from domains.chatbot.router import router as chatbot_router
 
 # Import every domain's models so their tables are registered on Base.metadata
 # before create_all runs, even for domains without a router wired up yet.
+# domains/chatbot has none — it's a stateless proxy to an external chat API.
 from domains.market import models as market_models  # noqa: F401
 from domains.student import models as student_models  # noqa: F401
 from domains.guidance import models as guidance_models  # noqa: F401
@@ -28,6 +30,11 @@ tags_metadata = [
                        "(university, vocational, and alternative routes).",
     },
     {
+        "name": "AI Chatbot",
+        "description": "Conversational assistant that understands a user's needs through dialogue "
+                       "and surfaces relevant services — a chat-based front door to guidance.",
+    },
+    {
         "name": "Dev Tools",
         "description": "Local development and demo utilities — not part of the production guidance flow.",
     },
@@ -42,6 +49,7 @@ app = FastAPI(
 )
 
 app.include_router(market_router)
+app.include_router(chatbot_router)
 
 @app.get("/")
 def read_root():

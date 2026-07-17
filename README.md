@@ -11,6 +11,7 @@ Chi tiết kiến trúc, design pattern, và roadmap từng sprint xem tại [IM
 | `market` (Dev 1) | ✅ | ✅ đã mount vào `main.py` | Ingestion, skill demand, skill trend, auto-update `market_trend` |
 | `student` (Dev 2) | ✅ | ❌ chưa có | Chỉ có model + repository, chưa có service/router |
 | `guidance` (Dev 3) | ✅ | ❌ chưa có | Chỉ có model + repository, chưa có service/router/anti-bias |
+| `chatbot` | — (stateless) | ✅ đã mount vào `main.py` | Proxy tới FPT Cloud chat-completions API; không có bảng DB |
 
 Chỉ domain `market` hiện gọi được qua API. Bảng của `student`/`guidance` vẫn được tạo trong DB (model được import trong `main.py`) để không phá vỡ foreign key khi hai domain kia được nối dây ở các sprint sau.
 
@@ -25,7 +26,8 @@ app/
 ├── domains/
 │   ├── market/          # Dev 1 — Skill, Career, JobPosting, JobSkill, CareerSkill
 │   ├── student/         # Dev 2 — Student, InteractionLog, StudentSkillAssociation
-│   └── guidance/        # Dev 3 — EducationPath, Recommendation
+│   ├── guidance/        # Dev 3 — EducationPath, Recommendation
+│   └── chatbot/         # Stateless proxy to an external LLM chat API (no models.py)
 └── tests/                # unit/ + integration/ (scaffold, chưa có test)
 ```
 
@@ -61,7 +63,7 @@ Sửa `app/.env`:
 DATABASE_URL="postgresql://user:password@host:5432/dbname?sslmode=require"
 ```
 
-`DATABASE_URL` là bắt buộc (không có giá trị mặc định). Các biến khác (`PROJECT_NAME`, `VERSION`, `ENABLE_SEED_ENDPOINT`) đã có default trong `app/core/config.py`, chỉ cần override khi cần.
+`DATABASE_URL` là bắt buộc (không có giá trị mặc định). Các biến khác (`PROJECT_NAME`, `VERSION`, `ENABLE_SEED_ENDPOINT`, `FPT_CLOUD_API_KEY`, `FPT_CLOUD_BASE_URL`, `FPT_CLOUD_CHAT_MODEL`) đã có default trong `app/core/config.py`, chỉ cần override khi cần. `FPT_CLOUD_API_KEY` để trống thì phần còn lại của app vẫn chạy bình thường — chỉ `/assistant/chat` trả 503 và `/assistant/health` báo `configured: false`.
 
 ## Chạy server (local dev)
 
@@ -87,11 +89,31 @@ Tạo sẵn 10 skill, 5 career (Backend/Frontend/Data Scientist/DevOps/Business 
 - Idempotent với skill/career (match theo tên, gọi lại không tạo trùng); job posting thì được thêm mới mỗi lần gọi.
 - Bị tắt khi biến môi trường `ENABLE_SEED_ENDPOINT=false` — **luôn set false khi deploy production**, vì đây là endpoint không có auth, có thể bị lạm dụng để ghi rác vào DB nếu để public.
 
+## Chatbot AI
+
+Proxy tới FPT Cloud Marketplace chat-completions API (OpenAI-compatible). Không lưu hội thoại vào DB — client tự giữ `history` và gửi lại mỗi lần gọi.
+
+```
+POST /assistant/chat
+{
+  "message": "Em thích vẽ và làm việc với máy tính, nên học ngành gì?",
+  "history": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+}
+```
+→ `{"reply": "...", "model": "gemma-4-31B-it"}`
+
+System prompt cố định server-side (không nhận từ client) để không ai override hành vi/guardrail của assistant qua request body.
+
+```
+GET /assistant/health          # chỉ kiểm tra FPT_CLOUD_API_KEY có được set không — nhanh, miễn phí
+GET /assistant/health?deep=true  # gọi thật lên FPT Cloud (1 request tối thiểu) để xác nhận kết nối — tốn quota/độ trễ, không nên dùng cho health probe tần suất cao
+```
+
 ## Test Swagger / thử API
 
 Sau khi server chạy ở `http://127.0.0.1:8000`:
 
-- **Swagger UI**: http://127.0.0.1:8000/docs — interactive, có nút "Try it out" gọi thẳng API, nhóm theo tag `Market Data` / `Student Profile` / `AI Guidance`.
+- **Swagger UI**: http://127.0.0.1:8000/docs — interactive, có nút "Try it out" gọi thẳng API, nhóm theo tag `Market Data` / `Student Profile` / `AI Guidance` / `AI Chatbot` / `Dev Tools`.
 - **ReDoc**: http://127.0.0.1:8000/redoc — bản đọc tài liệu tĩnh.
 - **OpenAPI JSON**: http://127.0.0.1:8000/openapi.json — import vào Postman/Insomnia nếu cần.
 
