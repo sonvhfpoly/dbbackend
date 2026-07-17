@@ -56,6 +56,15 @@ class ChatbotService:
             # the event loop.
             response = requests.post(self._url, headers=self._headers(), json=payload, timeout=CHAT_TIMEOUT_SECONDS)
             response.raise_for_status()
+        except requests.HTTPError as exc:
+            # str(exc) is just the status line ("403 Client Error: Forbidden for
+            # url: ..."); the response body is where the gateway actually says
+            # *why* (bad key, model not entitled, quota exceeded, etc.).
+            body = exc.response.text[:500] if exc.response is not None else ""
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Chatbot upstream error: {exc} — body: {body}",
+            ) from exc
         except requests.RequestException as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
