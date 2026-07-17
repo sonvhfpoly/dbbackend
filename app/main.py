@@ -27,6 +27,10 @@ tags_metadata = [
         "description": "Personalized, explainable learning and career path recommendations "
                        "(university, vocational, and alternative routes).",
     },
+    {
+        "name": "Dev Tools",
+        "description": "Local development and demo utilities — not part of the production guidance flow.",
+    },
 ]
 
 app = FastAPI(

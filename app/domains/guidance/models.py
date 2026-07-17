@@ -22,7 +22,10 @@ class Recommendation(Base):
     __tablename__ = "recommendations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    student_id: Mapped[int] = mapped_column(ForeignKey("students.id")) # Assuming students table exists
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id"))
     path_id: Mapped[int] = mapped_column(ForeignKey("education_paths.id"))
+    # Required, not optional: every recommendation must be explainable so the
+    # student can weigh it as a reference rather than a directive (see the
+    # ethical constraints in IMPLEMENTATION_PLAN.md).
     reasoning_explanation: Mapped[str] = mapped_column(String(2000))
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)

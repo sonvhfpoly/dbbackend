@@ -10,7 +10,10 @@ class Student(Base):
     full_name: Mapped[str] = mapped_column(String(255))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     current_location: Mapped[str] = mapped_column(String(100), nullable=True)
-    ai_inferred_profile: Mapped[dict] = mapped_column(JSON, nullable=True) # Stores strengths, traits
+    # JSON, not a fixed set of columns: this is built up incrementally from many
+    # different interaction types (game, chat, quiz — see InteractionLog below),
+    # so its shape is expected to evolve as the profile-building logic does.
+    ai_inferred_profile: Mapped[dict] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
     interactions = relationship("InteractionLog", back_populates="student")

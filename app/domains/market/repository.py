@@ -18,6 +18,34 @@ class MarketRepository:
         self.db.refresh(db_skill)
         return db_skill
 
+    # Matched by name (unique) rather than an external id, since seed/demo data
+    # has no stable id to key off of and calling this repeatedly must not raise
+    # a duplicate-key error on Skill.name.
+    def get_or_create_skill(self, name: str, category: str, description: Optional[str] = None) -> Skill:
+        skill = self.db.query(Skill).filter(Skill.name == name).first()
+        if skill is None:
+            skill = self.create_skill({"name": name, "category": category, "description": description})
+        return skill
+
+    # Same idempotency need as get_or_create_skill, plus: if the career already
+    # exists we merge in any newly-passed skill_ids instead of overwriting, so
+    # re-seeding never drops a link another call already established.
+    def get_or_create_career(self, title: str, skill_ids: List[int]) -> Career:
+        career = self.db.query(Career).filter(Career.title == title).first()
+        if career is None:
+            career = Career(title=title)
+            self.db.add(career)
+            self.db.flush()  # assigns career.id so the skills relationship can be populated below
+
+        existing_ids = {s.id for s in career.skills}
+        missing_ids = [sid for sid in skill_ids if sid not in existing_ids]
+        if missing_ids:
+            career.skills.extend(self.db.query(Skill).filter(Skill.id.in_(missing_ids)).all())
+
+        self.db.commit()
+        self.db.refresh(career)
+        return career
+
     def get_careers(self, trend: Optional[str] = None) -> List[Career]:
         query = self.db.query(Career)
         if trend:
@@ -35,10 +63,17 @@ class MarketRepository:
         return db_career
 
     def bulk_create_jobs(self, jobs_data: List[dict]) -> int:
+        # skill_ids isn't a JobPosting column — pull it out per row before the
+        # bulk insert, but keep the lists (still in row order) to build the
+        # JobSkill rows once we know each posting's generated id.
         skill_ids_per_job = [data.pop("skill_ids", []) for data in jobs_data]
         if not jobs_data:
             return 0
 
+        # Two statements total regardless of batch size: a single executemany
+        # INSERT...RETURNING (to get the generated ids back, which plain
+        # session.add()/flush() per row would also give but one round trip at
+        # a time) followed by one bulk insert for the associations.
         result = self.db.execute(insert(JobPosting).returning(JobPosting.id), jobs_data)
         job_ids = [row[0] for row in result]
 
@@ -74,11 +109,16 @@ class MarketRepository:
         recent_counts = dict(self._skill_counts(location, recent_start, now))
         previous_counts = dict(self._skill_counts(location, previous_start, recent_start))
 
+        # Union, not intersection: a skill with 0 previous postings but demand
+        # now is exactly the "newly emerging" signal we want to surface, and it
+        # would silently disappear if we only iterated skills present in both.
         skills = set(recent_counts) | set(previous_counts)
         trends = []
         for name in skills:
             recent = recent_counts.get(name, 0)
             previous = previous_counts.get(name, 0)
+            # None (not 0 or inf) when there's no baseline to divide by — the caller
+            # decides how to treat "can't compute a rate", we don't fake a number.
             growth_rate = ((recent - previous) / previous) if previous > 0 else None
             trends.append({
                 "skill": name,
@@ -101,6 +141,9 @@ class MarketRepository:
         )
 
     def get_job_count_for_skills(self, skill_ids: List[int], start: datetime, end: datetime) -> int:
+        """Counts postings that need ANY of skill_ids — a career's demand signal,
+        not a per-skill breakdown. distinct() matters here: a posting tagged with
+        two of the career's skills must still only count once."""
         if not skill_ids:
             return 0
         return (
