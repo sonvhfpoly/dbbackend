@@ -12,6 +12,7 @@ Chi tiết kiến trúc, design pattern, và roadmap từng sprint xem tại [IM
 | `student` (Dev 2) | ✅ | ❌ chưa có | Chỉ có model + repository, chưa có service/router riêng — `guidance` seed tạm tạo 1 demo student qua repository có sẵn |
 | `guidance` (Dev 3) | ✅ | ✅ đã mount vào `main.py` | Recommendation engine + `AntiBiasEngine` (Strategy Pattern) |
 | `chatbot` | — (stateless) | ✅ đã mount vào `main.py` | Proxy tới FPT Cloud chat-completions API; không có bảng DB |
+| `task` | ✅ | ✅ đã mount vào `main.py` | Company-sponsored task marketplace, hỗ trợ sub-task, workflow nộp/duyệt/chấm điểm đầy đủ trạng thái |
 
 `student` chưa có router riêng (chưa đến lượt theo roadmap Sprint), nhưng bảng của nó đã tồn tại và `guidance` đọc/ghi trực tiếp qua `StudentRepository` có sẵn.
 
@@ -27,7 +28,8 @@ app/
 │   ├── market/          # Dev 1 — Skill, Career, JobPosting, JobSkill, CareerSkill
 │   ├── student/         # Dev 2 — Student, InteractionLog, StudentSkillAssociation
 │   ├── guidance/        # Dev 3 — EducationPath, Recommendation
-│   └── chatbot/         # Stateless proxy to an external LLM chat API (no models.py)
+│   ├── chatbot/         # Stateless proxy to an external LLM chat API (no models.py)
+│   └── task/            # Company, Task (self-referential sub-task), TaskSubmission, TaskSubmissionScore
 └── tests/                # unit/ + integration/ (scaffold, chưa có test)
 ```
 
@@ -133,11 +135,42 @@ Pipeline của `POST .../recommendations`:
 
 Unit test cho đúng case plan yêu cầu ("DiversityValidator converts a University-only list into a mixed list") nằm ở `app/tests/unit/test_anti_bias.py`.
 
+## Task Marketplace (nhiệm vụ thực hành từ doanh nghiệp)
+
+Data model đầy đủ xem tại [TASK_DATA_MODEL.md](TASK_DATA_MODEL.md). Task hỗ trợ **sub-task** — dùng chung bảng `Task`, tự tham chiếu qua `parent_task_id` (tối đa 2 cấp), điểm năng lực của task cha được **cộng dồn** từ các sub-task đã hoàn thành, không lưu tĩnh.
+
+```
+POST /tasks/seed-demo-data   # 1 company + 1 task gốc (không tự có điểm) + 2 sub-task (20đ, 30đ) — tái tạo đúng ví dụ WORKLAB
+POST /tasks/companies/       GET /tasks/companies/
+POST /tasks/                 GET /tasks/                GET /tasks/{task_id}
+```
+
+`difficulty` là **tùy chọn** khi tạo task (root lẫn sub-task) — nếu bỏ trống, service tự gọi chatbot để phân loại `EASY`/`MEDIUM`/`HARD` dựa trên title/context/scope/estimated hours; nếu người dùng đã truyền `difficulty` sẵn thì AI không được ghi đè giá trị đó. Bước gọi AI này là best-effort: nếu chatbot lỗi hoặc trả về không đúng định dạng, task vẫn được tạo bình thường với difficulty mặc định (`MEDIUM`).
+
+Khi tạo một **task gốc** (không truyền `parent_task_id`), `POST /tasks/` còn gọi thêm chatbot để quyết định có nên tách task đó thành các sub-task hay không (dùng chung 1 lần gọi AI với việc đánh giá difficulty ở trên); nếu có, chatbot trả về danh sách sub-task và service tự lưu chúng (kèm `parent_task_id` trỏ về task gốc) rồi đặt `competency_points` của task gốc về `null` (điểm giờ cộng dồn từ sub-task). Việc tạo sub-task/task thủ công qua `parent_task_id` vẫn hoạt động như cũ và không kích hoạt lại bước tách-sub-task này (tránh đệ quy vượt quá 2 cấp) — nhưng vẫn được tự động gán `difficulty` nếu bỏ trống.
+
+Luồng nộp/duyệt cho từng task (áp dụng như nhau cho task gốc lẫn sub-task, vì sub-task chỉ là 1 row `Task` khác):
+
+```
+POST /tasks/{task_id}/join                              {student_id}          → JOINED (idempotent — join lại trả về submission đang có, không tạo bản ghi mới)
+POST /tasks/{task_id}/submit                             {student_id, report_url}  → SUBMITTED (tra theo task_id + student_id, không cần biết submission_id)
+POST /tasks/submissions/{id}/auto-check                                        → AUTO_CHECK_PASSED | AUTO_CHECK_FAILED
+POST /tasks/submissions/{id}/mentor-review               {approved, feedback}  → MENTOR_APPROVED | MENTOR_REJECTED
+POST /tasks/submissions/{id}/scores                      {criterion_id, score_percent, feedback, scored_by}  → upsert điểm theo từng tiêu chí
+POST /tasks/submissions/{id}/complete                    {completed_by: AI|MENTOR}  → COMPLETED, ghi `points_awarded` (snapshot, không đọc lại Task sau này)
+GET  /tasks/submissions/{id}                             GET /tasks/submissions?student_id=...&task_id=...   (bỏ trống cả 2 filter để lấy toàn bộ submission)
+GET  /tasks/{task_id}/progress?student_id=...            → nếu có sub-task: cộng dồn điểm + is_fully_completed; nếu là leaf: trả thẳng trạng thái submission
+```
+
+`complete` chỉ hợp lệ khi đã qua đúng "cổng" mà task yêu cầu (`requires_auto_check`/`requires_mentor_approval`) — gọi sai thứ tự sẽ trả `400` kèm lý do rõ ràng (trạng thái hiện tại vs trạng thái cần có). `AUTO_CHECK_FAILED`/`MENTOR_REJECTED` không phải ngõ cụt — gọi lại `submit` để nộp lại.
+
+Unit test cho rule 2-cấp và logic cộng dồn điểm (không cần DB) nằm ở `app/tests/unit/test_task_service.py`.
+
 ## Test Swagger / thử API
 
 Sau khi server chạy ở `http://127.0.0.1:8000`:
 
-- **Swagger UI**: http://127.0.0.1:8000/docs — interactive, có nút "Try it out" gọi thẳng API, nhóm theo tag `Market Data` / `Student Profile` / `AI Guidance` / `AI Chatbot` / `Dev Tools`.
+- **Swagger UI**: http://127.0.0.1:8000/docs — interactive, có nút "Try it out" gọi thẳng API, nhóm theo tag `Market Data` / `Student Profile` / `AI Guidance` / `AI Chatbot` / `Task Marketplace` / `Dev Tools`.
 - **ReDoc**: http://127.0.0.1:8000/redoc — bản đọc tài liệu tĩnh.
 - **OpenAPI JSON**: http://127.0.0.1:8000/openapi.json — import vào Postman/Insomnia nếu cần.
 
@@ -156,7 +189,7 @@ Cách nhanh nhất: gọi `POST /market/seed-demo-data` (mục trên) một lầ
 uv run --project .. pytest
 ```
 
-`app/tests/unit/test_anti_bias.py` có sẵn; `app/tests/integration` vẫn là scaffold rỗng — sẽ lấp đầy theo Test Plan trong `IMPLEMENTATION_PLAN.md` (integration cho luồng router → service → DB). `pythonpath = ["app"]` đã cấu hình trong `pyproject.toml` nên chạy `pytest` từ đâu cũng import được `core.*`/`domains.*`.
+`app/tests/unit/test_anti_bias.py` và `app/tests/unit/test_task_service.py` có sẵn; `app/tests/integration` vẫn là scaffold rỗng — sẽ lấp đầy theo Test Plan trong `IMPLEMENTATION_PLAN.md` (integration cho luồng router → service → DB). `pythonpath = ["app"]` đã cấu hình trong `pyproject.toml` nên chạy `pytest` từ đâu cũng import được `core.*`/`domains.*`.
 
 ## Docker / Deploy lên Cloud Run
 
