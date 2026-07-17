@@ -3,6 +3,7 @@ from core.database import Base, engine
 from core.config import settings
 from domains.market.router import router as market_router
 from domains.chatbot.router import router as chatbot_router
+from domains.guidance.router import router as guidance_router
 
 # Import every domain's models so their tables are registered on Base.metadata
 # before create_all runs, even for domains without a router wired up yet.
@@ -50,6 +51,7 @@ app = FastAPI(
 
 app.include_router(market_router)
 app.include_router(chatbot_router)
+app.include_router(guidance_router)
 
 @app.get("/")
 def read_root():

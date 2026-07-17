@@ -30,15 +30,22 @@ class ChatbotService:
         }
 
     def chat(self, message: str, history: List[ChatMessage]) -> str:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages += [{"role": h.role.value, "content": h.content} for h in history]
+        messages.append({"role": "user", "content": message})
+        return self.complete(messages)
+
+    def complete(self, messages: List[dict]) -> str:
+        """Single-turn (or pre-built multi-turn) completion for callers that need
+        a different persona/task than the general assistant in chat() — e.g. the
+        guidance domain's recommendation engine, which needs structured JSON back
+        rather than a conversational reply. Takes raw OpenAI-style message dicts
+        so callers control the system prompt directly."""
         if not settings.FPT_CLOUD_API_KEY:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Chatbot is not configured: FPT_CLOUD_API_KEY is missing",
             )
-
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        messages += [{"role": h.role.value, "content": h.content} for h in history]
-        messages.append({"role": "user", "content": message})
 
         payload = {
             "model": settings.FPT_CLOUD_CHAT_MODEL,

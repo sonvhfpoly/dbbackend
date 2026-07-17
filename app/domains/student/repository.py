@@ -9,6 +9,9 @@ class StudentRepository:
     def get_student(self, student_id: int) -> Optional[Student]:
         return self.db.query(Student).filter(Student.id == student_id).first()
 
+    def get_by_email(self, email: str) -> Optional[Student]:
+        return self.db.query(Student).filter(Student.email == email).first()
+
     def create_student(self, student_data: dict) -> Student:
         db_student = Student(**student_data)
         self.db.add(db_student)

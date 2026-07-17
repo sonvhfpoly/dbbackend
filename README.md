@@ -9,11 +9,11 @@ Chi tiết kiến trúc, design pattern, và roadmap từng sprint xem tại [IM
 | Domain | Models | Router (API) | Ghi chú |
 | :--- | :--- | :--- | :--- |
 | `market` (Dev 1) | ✅ | ✅ đã mount vào `main.py` | Ingestion, skill demand, skill trend, auto-update `market_trend` |
-| `student` (Dev 2) | ✅ | ❌ chưa có | Chỉ có model + repository, chưa có service/router |
-| `guidance` (Dev 3) | ✅ | ❌ chưa có | Chỉ có model + repository, chưa có service/router/anti-bias |
+| `student` (Dev 2) | ✅ | ❌ chưa có | Chỉ có model + repository, chưa có service/router riêng — `guidance` seed tạm tạo 1 demo student qua repository có sẵn |
+| `guidance` (Dev 3) | ✅ | ✅ đã mount vào `main.py` | Recommendation engine + `AntiBiasEngine` (Strategy Pattern) |
 | `chatbot` | — (stateless) | ✅ đã mount vào `main.py` | Proxy tới FPT Cloud chat-completions API; không có bảng DB |
 
-Chỉ domain `market` hiện gọi được qua API. Bảng của `student`/`guidance` vẫn được tạo trong DB (model được import trong `main.py`) để không phá vỡ foreign key khi hai domain kia được nối dây ở các sprint sau.
+`student` chưa có router riêng (chưa đến lượt theo roadmap Sprint), nhưng bảng của nó đã tồn tại và `guidance` đọc/ghi trực tiếp qua `StudentRepository` có sẵn.
 
 ## Kiến trúc
 
@@ -109,6 +109,30 @@ GET /assistant/health          # chỉ kiểm tra FPT_CLOUD_API_KEY có được
 GET /assistant/health?deep=true  # gọi thật lên FPT Cloud (1 request tối thiểu) để xác nhận kết nối — tốn quota/độ trễ, không nên dùng cho health probe tần suất cao
 ```
 
+## AI Guidance (đề xuất lộ trình học tập)
+
+Kết hợp hồ sơ học sinh (Dev 2), xu hướng thị trường (Dev 1), và một catalog `EducationPath` đã có sẵn, để LLM chọn ra lộ trình phù hợp kèm giải thích — rồi chạy qua `AntiBiasEngine` trước khi lưu.
+
+```
+POST /guidance/seed-demo-data     # 6 education path (đủ 3 loại hình, có cả remote) + 1 demo student (Cần Thơ)
+POST /guidance/education-paths/   # tự thêm path khác nếu muốn
+GET  /guidance/education-paths/
+
+POST /guidance/students/{student_id}/recommendations?count=3
+GET  /guidance/students/{student_id}/recommendations
+```
+
+Pipeline của `POST .../recommendations`:
+1. Lấy `Student.ai_inferred_profile` + `current_location` (Dev 2) và toàn bộ `Career.market_trend` hiện có (Dev 1).
+2. Gọi LLM (dùng chung `ChatbotService.complete()` với domain `chatbot`, nhưng system prompt khác hẳn — yêu cầu chọn đúng từ catalog theo `path_id`, trả JSON, không được dựa vào giới tính/quê quán) để sinh `reasoning_explanation` cho từng lựa chọn.
+3. **`AntiBiasEngine`** (Strategy Pattern, `domains/guidance/anti_bias.py`):
+   - `DiversityValidator` — nếu tất cả gợi ý cùng một `PathType` (vd. toàn `UNIVERSITY`), thay 1 slot bằng loại hình khác từ catalog.
+   - `RegionExpansionValidator` — nếu tất cả gợi ý đều gắn với đúng `current_location` của học sinh, thay 1 slot bằng path `location=None` (remote/toàn quốc).
+   - Cả hai đều gắn `reasoning_explanation` riêng giải thích lý do được bổ sung — không âm thầm chèn.
+4. Lưu các recommendation đã qua validate vào DB, trả về kèm `reasoning_explanation`.
+
+Unit test cho đúng case plan yêu cầu ("DiversityValidator converts a University-only list into a mixed list") nằm ở `app/tests/unit/test_anti_bias.py`.
+
 ## Test Swagger / thử API
 
 Sau khi server chạy ở `http://127.0.0.1:8000`:
@@ -132,7 +156,7 @@ Cách nhanh nhất: gọi `POST /market/seed-demo-data` (mục trên) một lầ
 uv run --project .. pytest
 ```
 
-`app/tests/unit` và `app/tests/integration` hiện là scaffold rỗng — sẽ được lấp đầy theo Test Plan trong `IMPLEMENTATION_PLAN.md` (unit cho `service.py`/`anti_bias.py`, integration cho luồng router → service → DB).
+`app/tests/unit/test_anti_bias.py` có sẵn; `app/tests/integration` vẫn là scaffold rỗng — sẽ lấp đầy theo Test Plan trong `IMPLEMENTATION_PLAN.md` (integration cho luồng router → service → DB). `pythonpath = ["app"]` đã cấu hình trong `pyproject.toml` nên chạy `pytest` từ đâu cũng import được `core.*`/`domains.*`.
 
 ## Docker / Deploy lên Cloud Run
 

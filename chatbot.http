@@ -1,0 +1,32 @@
+@baseUrl = https://mkp-api.fptcloud.com
+@model = gemma-4-31B-it
+
+### Chat completions (non-streaming)
+# REST Client's $dotenv has no custom-path syntax — it only reads a `.env`
+# file that sits in the SAME FOLDER as this .http file (repo root here), and
+# the reference is just the bare variable name, no path/`%` prefix. A `.env`
+# at repo root with FPT_CLOUD_API_KEY set is required for this to resolve
+# (separate from app/.env, which only the FastAPI app itself reads).
+# Alternative if you'd rather not keep a second .env: swap this line for
+# `Authorization: Bearer {{$processEnv FPT_CLOUD_API_KEY}}` (set
+# FPT_CLOUD_API_KEY in the shell VS Code was launched from) or
+# `Authorization: Bearer {{$prompt apiKey}}` (asks each time you send).
+POST {{baseUrl}}/chat/completions
+Content-Type: application/json
+Authorization: Bearer {{$dotenv FPT_CLOUD_API_KEY}}
+Cookie: cf_use_ob=0
+
+{
+  "model": "{{model}}",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant capable of understanding a user's needs through conversation to recommend suitable services. Based on the conversation history and the user's last message, list services that can address the user's needs. Respond only in Vietnamese or English, matching the language of the user's input."
+    },
+    {
+      "role": "user",
+      "content": "hi"
+    }
+  ],
+  "stream": false
+}

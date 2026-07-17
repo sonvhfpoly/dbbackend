@@ -1,3 +1,4 @@
+from typing import Optional
 from sqlalchemy import String, ForeignKey, Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from core.database import Base
@@ -17,6 +18,10 @@ class EducationPath(Base):
     type: Mapped[PathType] = mapped_column(SQLEnum(PathType))
     duration: Mapped[str] = mapped_column(String(50))
     requirements: Mapped[str] = mapped_column(String(1000), nullable=True)
+    # Null = available regardless of location (remote/online/nationwide) rather
+    # than tied to one place — this is what lets RegionExpansionValidator offer a
+    # deterministic non-local option instead of guessing from free-text fields.
+    location: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
 
 class Recommendation(Base):
     __tablename__ = "recommendations"

@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "passlib[bcrypt]>=1.7",
     "requests>=2.34.2",
+    "litellm>=1.92.0",
 ]
 
 [tool.uv]
@@ -23,3 +24,10 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+# app/ has no package prefix on its own imports (`from core.database import
+# ...`, `from domains.market... import ...`), so it must be on sys.path for
+# test modules to import them — independent of whatever directory pytest is
+# invoked from. Path is resolved relative to this file's directory (rootdir).
+pythonpath = ["app"]
