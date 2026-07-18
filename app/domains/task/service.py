@@ -134,6 +134,39 @@ class TaskService:
             raise EntityNotFoundException("Task", task_id)
         return task
 
+    def delete_task(self, task_id: int, force: bool = False) -> None:
+        """Deletes a task. Evidence claims against it (or any of its
+        sub-tasks) always block deletion outright — evidence has already
+        updated a StudentSkillProfile elsewhere (see evidence/service.py's
+        mentor_decide), and this method has no way to safely unwind that, so
+        it never cascades into evidence regardless of force. Sub-tasks and
+        their submissions/reviews only block when force=False; force=True
+        deletes them (child-before-parent, to satisfy the parent_task_id FK)
+        along with this task."""
+        task = self.get_task(task_id)  # 404s if missing
+        sub_tasks = self.repo.get_sub_tasks(task_id)
+        all_ids = [task_id] + [sub.id for sub in sub_tasks]
+
+        evidence_count = sum(self.repo.count_evidence_claims_for_task(tid) for tid in all_ids)
+        if evidence_count:
+            raise BusinessLogicException(
+                f"Task {task_id} (or its sub-tasks) has {evidence_count} evidence claim(s) recorded "
+                "against it — deleting a task never cascades into evidence records."
+            )
+
+        submission_count = sum(self.repo.count_submissions_for_task(tid) for tid in all_ids)
+        if (sub_tasks or submission_count) and not force:
+            raise BusinessLogicException(
+                f"Task {task_id} has {len(sub_tasks)} sub-task(s) and {submission_count} submission(s); "
+                "pass force=true to delete them along with the task, or remove them first."
+            )
+
+        for sub_task in sub_tasks:
+            self.repo.delete_submissions_for_task(sub_task.id)
+            self.repo.delete_task_row(sub_task)
+        self.repo.delete_submissions_for_task(task_id)
+        self.repo.delete_task_row(task)
+
     def list_tasks(
         self,
         complexity_level: Optional[str] = None,

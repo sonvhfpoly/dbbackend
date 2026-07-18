@@ -86,6 +86,31 @@ class TaskRepository:
         self.db.refresh(task)
         return task
 
+    def delete_task_row(self, task: Task) -> None:
+        """Deletes exactly this row. inputs/outputs/criteria/reviews cascade
+        via their relationship(cascade="all, delete-orphan") on Task — but
+        sub_tasks and task_submissions don't, so the caller (TaskService.delete_task)
+        must clear those explicitly first, in child-before-parent order."""
+        self.db.delete(task)
+        self.db.commit()
+
+    def count_submissions_for_task(self, task_id: int) -> int:
+        return self.db.query(TaskSubmission).filter(TaskSubmission.task_id == task_id).count()
+
+    def delete_submissions_for_task(self, task_id: int) -> None:
+        # One-by-one (not a bulk query().delete()) so TaskSubmission's own
+        # cascade="all, delete-orphan" on scores/files actually fires.
+        submissions = self.db.query(TaskSubmission).filter(TaskSubmission.task_id == task_id).all()
+        for submission in submissions:
+            self.db.delete(submission)
+        self.db.commit()
+
+    def count_evidence_claims_for_task(self, task_id: int) -> int:
+        # Lazy import: evidence is a separate domain and this is the only
+        # place task/repository.py needs to reach into it.
+        from domains.evidence.models import EvidenceClaim
+        return self.db.query(EvidenceClaim).filter(EvidenceClaim.task_id == task_id).count()
+
     # ---- Task review ----
 
     def create_task_review(self, task_id: int, data: dict) -> TaskReview:

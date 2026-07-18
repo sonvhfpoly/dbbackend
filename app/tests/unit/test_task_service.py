@@ -1,6 +1,6 @@
 import pytest
 from types import SimpleNamespace
-from core.exceptions import BusinessLogicException
+from core.exceptions import BusinessLogicException, EntityNotFoundException
 from domains.task.service import TaskService
 from domains.task.models import SubmissionStatus, TaskComplexity
 
@@ -18,13 +18,19 @@ def make_task(id, parent_task_id=None):
 class FakeRepo:
     # id=1 exists by default since every existing test in this file passes
     # company_id=1 expecting it to be honored as-is (a real, registered company).
-    def __init__(self, tasks=None, sub_tasks=None, submissions=None, companies=None):
+    def __init__(self, tasks=None, sub_tasks=None, submissions=None, companies=None,
+                 submissions_by_task=None, evidence_by_task=None):
         self.tasks = tasks or {}
         self.sub_tasks = sub_tasks or {}
         # submissions: dict[(task_id, student_id)] -> SimpleNamespace(status=..., points_awarded=...)
         self.submissions = submissions or {}
         self.companies = companies if companies is not None else {1: SimpleNamespace(id=1)}
         self.created_tasks = []
+        self.deleted_task_ids = []
+        self.deleted_submission_task_ids = []
+        # submissions_by_task/evidence_by_task: dict[task_id] -> count, for delete_task tests
+        self.submissions_by_task = submissions_by_task or {}
+        self.evidence_by_task = evidence_by_task or {}
         self._next_id = 1000
 
     def get_task(self, task_id):
@@ -59,6 +65,20 @@ class FakeRepo:
         for key, value in fields.items():
             setattr(task, key, value)
         return task
+
+    def delete_task_row(self, task):
+        self.deleted_task_ids.append(task.id)
+        self.tasks.pop(task.id, None)
+
+    def count_submissions_for_task(self, task_id):
+        return self.submissions_by_task.get(task_id, 0)
+
+    def delete_submissions_for_task(self, task_id):
+        self.deleted_submission_task_ids.append(task_id)
+        self.submissions_by_task[task_id] = 0
+
+    def count_evidence_claims_for_task(self, task_id):
+        return self.evidence_by_task.get(task_id, 0)
 
 class FakeChatbot:
     def __init__(self, reply):
@@ -385,3 +405,78 @@ def test_progress_is_fully_completed_when_all_sub_tasks_done():
 
     assert progress["total_points_awarded"] == 50
     assert progress["is_fully_completed"] is True
+
+# ---- delete_task ----
+
+def test_delete_task_with_no_children_deletes_immediately():
+    task = make_task(id=1)
+    repo = FakeRepo(tasks={1: task})
+    service = make_service(repo)
+
+    service.delete_task(1)
+
+    assert repo.deleted_task_ids == [1]
+
+def test_delete_task_raises_not_found_when_missing():
+    repo = FakeRepo()
+    service = make_service(repo)
+
+    with pytest.raises(EntityNotFoundException):
+        service.delete_task(999)
+
+def test_delete_task_blocks_on_sub_tasks_without_force():
+    root = make_task(id=1)
+    sub = make_task(id=2, parent_task_id=1)
+    repo = FakeRepo(tasks={1: root, 2: sub}, sub_tasks={1: [sub]})
+    service = make_service(repo)
+
+    with pytest.raises(BusinessLogicException):
+        service.delete_task(1)
+
+    assert repo.deleted_task_ids == []
+
+def test_delete_task_blocks_on_submissions_without_force():
+    task = make_task(id=1)
+    repo = FakeRepo(tasks={1: task}, submissions_by_task={1: 2})
+    service = make_service(repo)
+
+    with pytest.raises(BusinessLogicException):
+        service.delete_task(1)
+
+    assert repo.deleted_task_ids == []
+
+def test_delete_task_force_cascades_sub_tasks_and_submissions():
+    root = make_task(id=1)
+    sub = make_task(id=2, parent_task_id=1)
+    repo = FakeRepo(
+        tasks={1: root, 2: sub}, sub_tasks={1: [sub]},
+        submissions_by_task={1: 1, 2: 3},
+    )
+    service = make_service(repo)
+
+    service.delete_task(1, force=True)
+
+    # Sub-task deleted before the parent (FK ordering), and both had their submissions cleared.
+    assert repo.deleted_task_ids == [2, 1]
+    assert set(repo.deleted_submission_task_ids) == {1, 2}
+
+def test_delete_task_blocks_on_evidence_claims_even_with_force():
+    task = make_task(id=1)
+    repo = FakeRepo(tasks={1: task}, evidence_by_task={1: 1})
+    service = make_service(repo)
+
+    with pytest.raises(BusinessLogicException):
+        service.delete_task(1, force=True)
+
+    assert repo.deleted_task_ids == []
+
+def test_delete_task_blocks_on_sub_task_evidence_claims():
+    root = make_task(id=1)
+    sub = make_task(id=2, parent_task_id=1)
+    repo = FakeRepo(tasks={1: root, 2: sub}, sub_tasks={1: [sub]}, evidence_by_task={2: 1})
+    service = make_service(repo)
+
+    with pytest.raises(BusinessLogicException):
+        service.delete_task(1, force=True)
+
+    assert repo.deleted_task_ids == []

@@ -40,6 +40,8 @@ Doanh nghiệp tài trợ task. `slug` unique dùng cho route URL-friendly. `is_
 
 > **Về việc gộp `difficulty` → `complexity_level`**: bản đầu tiên của domain `task` (trước khi map theo `requirements.md`) có field `difficulty` (EASY/MEDIUM/HARD) độc lập với T-level. Hai field mô tả cùng một khái niệm nên đã được gộp — `complexity_level` (T1-T3) là field duy nhất còn lại, dùng cho cả AI auto-assess lẫn mentor override. Đừng tái tạo lại field `difficulty`.
 
+> **Về `company_id` bỏ trống/không hợp lệ**: `TaskCreate.company_id` (và `TBConversationCreate.company_id`) là `Optional[int]` ở tầng request. Nếu bỏ trống hoặc trỏ tới một `company_id` không tồn tại, `TaskService.resolve_company_id` tự resolve về một `Company` placeholder dùng chung (`slug="unregistered-company"`, tạo lười lần đầu cần tới) thay vì raise lỗi — cột DB vẫn `NOT NULL` FK như bảng trên, mọi `Task`/`TBConversation` luôn trỏ tới một company thật, chỉ có thể là placeholder thay vì company caller định nhắc tới. Gọi từ cả `TaskService.create_task` lẫn `TaskBuilderService.start_conversation`.
+
 ### `TaskReview` — quyết định của mentor trên chính Task (khác `TaskSubmission` review)
 
 Append-only history (1 task có thể được review nhiều lần: `NEED_MORE_INFO` → business sửa → review lại). `Task.review_status` luôn phản ánh quyết định gần nhất.
@@ -111,6 +113,14 @@ Task    (1) ──< (N) Task                     (self-ref parent_task_id, tối
 TaskSubmission (1) ──< (N) TaskSubmissionScore / TaskSubmissionFile
 TaskSubmission.student_id ─ ─ ─ (tham chiếu lỏng) ─ ─ ─> Student (domain khác)
 ```
+
+### Xóa Task (`DELETE /tasks/{task_id}`)
+
+`TaskInput`/`TaskOutput`/`TaskEvaluationCriterion`/`TaskReview` cascade tự động (`cascade="all, delete-orphan"` trên relationship của `Task`). Sub-task và `TaskSubmission` thì không — `TaskService.delete_task`:
+
+- **Có `EvidenceClaim` tham chiếu tới task (hoặc bất kỳ sub-task nào)**: luôn bị chặn (`400`), **kể cả khi `force=true`** — evidence đã có thể cập nhật `StudentSkillProfile` ở nơi khác ([EvidenceService._apply_to_skill_profile](#2-domain-evidence)), xóa task không có cách nào an toàn để undo việc đó.
+- **Có sub-task hoặc `TaskSubmission`, không có evidence**: mặc định chặn (`400`); truyền `?force=true` để cascade xóa sub-task (kèm submission/review của chính nó) rồi tới task cha, theo đúng thứ tự con-trước-cha (tránh vi phạm FK `parent_task_id`).
+- Không có gì phụ thuộc: xóa ngay, trả `204`.
 
 ---
 

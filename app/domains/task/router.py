@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from core.database import get_db
@@ -65,6 +65,18 @@ def list_pending_approval_tasks(company_id: Optional[int] = None, db: Session = 
 @router.get("/{task_id}", response_model=TaskRead, summary="Get a task's detail, including its sub-tasks")
 def get_task(task_id: int, db: Session = Depends(get_db)):
     return TaskService(db).get_task(task_id)
+
+@router.delete(
+    "/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a task",
+    description="Blocked if the task (or a sub-task) has evidence claims recorded against it — deleting a task "
+                "never cascades into evidence. If it has sub-tasks or submissions, pass force=true to delete "
+                "them along with the task; otherwise the request is rejected.",
+)
+def delete_task(task_id: int, force: bool = False, db: Session = Depends(get_db)):
+    TaskService(db).delete_task(task_id, force=force)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @router.post(
     "/{task_id}/review",
