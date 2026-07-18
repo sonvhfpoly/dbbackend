@@ -64,6 +64,16 @@ class TaskEvaluationCriterionRead(TaskEvaluationCriterionCreate):
     id: int
     model_config = ConfigDict(from_attributes=True)
 
+class TaskSkillRead(BaseModel):
+    id: int
+    name: str
+    category: str
+    description: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class SetTaskSkillsRequest(BaseModel):
+    skill_ids: List[int] = Field(default_factory=list)
+
 # ---- Task ----
 
 class TaskBase(BaseModel):
@@ -81,6 +91,7 @@ class TaskBase(BaseModel):
     requires_mentor_approval: bool = True
     mentor_approval_sla_hours: Optional[int] = None
     data_privacy_notice: Optional[str] = None
+    deadline: Optional[datetime] = Field(default=None, description="Business's desired completion date (requirements.md §7.1) — optional, display/planning only.")
     checkpoints: List[str] = Field(default_factory=list, description="Milestones the student is expected to hit while working outside WORKLAB — display-only.")
     # Optional: when omitted, the service asks the chatbot to assess T-level
     # from the task's title/context/scope instead of requiring the caller to
@@ -93,6 +104,10 @@ class TaskCreate(TaskBase):
     inputs: List[TaskInputCreate] = Field(default_factory=list)
     outputs: List[TaskOutputCreate] = Field(default_factory=list)
     criteria: List[TaskEvaluationCriterionCreate] = Field(default_factory=list)
+    skill_ids: List[int] = Field(
+        default_factory=list,
+        description="Existing market Skill ids exercised by this task.",
+    )
     skip_ai_planning: bool = Field(
         default=False,
         description="Skip the LLM call for T-level assessment and sub-task auto-splitting entirely — "
@@ -106,7 +121,10 @@ class TaskRead(TaskBase):
     inputs: List[TaskInputRead] = Field(default_factory=list)
     outputs: List[TaskOutputRead] = Field(default_factory=list)
     criteria: List[TaskEvaluationCriterionRead] = Field(default_factory=list)
+    skills: List[TaskSkillRead] = Field(default_factory=list)
     sub_tasks: List["TaskRead"] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
 TaskRead.model_rebuild()

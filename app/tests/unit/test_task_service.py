@@ -2,7 +2,7 @@ import pytest
 from types import SimpleNamespace
 from core.exceptions import BusinessLogicException, EntityNotFoundException
 from domains.task.service import TaskService
-from domains.task.models import SubmissionStatus, TaskComplexity
+from domains.task.models import SubmissionStatus, TaskComplexity, CompletionActor
 
 def make_service(repo, chatbot=None):
     """TaskService.__init__ opens a real DB session via TaskRepository(db) —
@@ -83,8 +83,10 @@ class FakeRepo:
 class FakeChatbot:
     def __init__(self, reply):
         self.reply = reply
+        self.calls = []
 
-    def complete(self, messages):
+    def complete(self, messages, json_mode=False):
+        self.calls.append(json_mode)
         if isinstance(self.reply, Exception):
             raise self.reply
         return self.reply
@@ -155,6 +157,30 @@ def test_ai_plan_subtasks_does_not_touch_complexity_when_override_disabled():
     service._ai_plan_subtasks(task, override_complexity=False)
 
     assert task.complexity_level == TaskComplexity.T1  # AI's "T3" opinion ignored
+
+def test_ai_plan_subtasks_requests_json_mode_from_provider():
+    """Regression test: without json_mode=True, the model isn't constrained
+    to return JSON at the provider level, so a freeform reply silently fails
+    _parse_planning_output and _ai_plan_subtasks swallows it — the task is
+    still created, just as a flat task with zero sub-tasks and no error
+    surfaced anywhere. This is the same class of bug fixed for task_builder's
+    _complete_and_parse; the fix here is the same json_mode=True flag."""
+    task = make_root_task()
+    repo = FakeRepo(tasks={task.id: task})
+    chatbot = FakeChatbot('{"complexity_level": "T2", "should_split": false, "sub_tasks": []}')
+    service = make_service(repo, chatbot=chatbot)
+
+    service._ai_plan_subtasks(task)
+
+    assert chatbot.calls == [True]
+
+def test_ai_assess_complexity_requests_json_mode_from_provider():
+    chatbot = FakeChatbot('{"complexity_level": "T2"}')
+    service = make_service(FakeRepo(), chatbot=chatbot)
+
+    service._ai_assess_complexity({"title": "t", "context": "c", "estimated_hours_min": 1, "estimated_hours_max": 2})
+
+    assert chatbot.calls == [True]
 
 def test_ai_plan_subtasks_skipped_entirely_when_skip_true():
     task = make_root_task()
@@ -245,29 +271,126 @@ def test_create_task_root_skip_ai_planning_uses_default_and_never_calls_chatbot(
     assert created.complexity_level == TaskComplexity.T1  # default, not AI-assessed
     assert repo.created_tasks == [created]  # no sub-tasks spawned
 
+class ReviewRepo(FakeRepo):
+    def __init__(self, task, submission):
+        super().__init__(tasks={task.id: task})
+        self.submission_by_id = {submission.id: submission}
+
+    def get_submission(self, submission_id):
+        return self.submission_by_id.get(submission_id)
+
+    def update_submission(self, submission_id, **fields):
+        submission = self.submission_by_id[submission_id]
+        for key, value in fields.items():
+            setattr(submission, key, value)
+        return submission
+
 def test_mentor_review_accepts_submitted_status_when_auto_check_is_required():
-    class ReviewRepo(FakeRepo):
-        def __init__(self, task, submission):
-            super().__init__(tasks={task.id: task})
-            self.submission_by_id = {submission.id: submission}
-
-        def get_submission(self, submission_id):
-            return self.submission_by_id.get(submission_id)
-
-        def update_submission(self, submission_id, **fields):
-            submission = self.submission_by_id[submission_id]
-            for key, value in fields.items():
-                setattr(submission, key, value)
-            return submission
-
-    task = SimpleNamespace(id=1, requires_auto_check=True, requires_mentor_approval=True)
+    task = SimpleNamespace(id=1, requires_auto_check=True, requires_mentor_approval=True, competency_points=40)
     submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.SUBMITTED)
     repo = ReviewRepo(task, submission)
     service = make_service(repo)
 
     result = service.mentor_review(2, approved=True, feedback="Looks good")
 
-    assert result.status == SubmissionStatus.MENTOR_APPROVED
+    # Mentor review is reachable directly from SUBMITTED even when
+    # requires_auto_check=True (auto-check may not have run, or the task
+    # allows skipping straight to mentor review) — and completes immediately.
+    assert result.status == SubmissionStatus.COMPLETED
+
+def test_mentor_review_approval_completes_submission_immediately():
+    """Regression test: approving used to leave the submission at
+    MENTOR_APPROVED, requiring a separate /complete call the caller could
+    easily forget — nothing in requirements.md describes that as a distinct
+    mentor-facing step, and it's why student profiles weren't showing
+    completed tasks after a mentor "confirmed" a submission. Approval must
+    now complete the submission in the same call."""
+    task = SimpleNamespace(id=1, requires_auto_check=False, requires_mentor_approval=True, competency_points=40)
+    submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.SUBMITTED)
+    repo = ReviewRepo(task, submission)
+    service = make_service(repo)
+
+    result = service.mentor_review(2, approved=True, feedback="Looks good")
+
+    assert result.status == SubmissionStatus.COMPLETED
+    assert result.completed_by == CompletionActor.MENTOR
+    assert result.points_awarded == 40
+    assert result.completed_at is not None
+
+def test_mentor_review_rejection_still_allows_resubmit_unchanged():
+    task = SimpleNamespace(id=1, requires_auto_check=False, requires_mentor_approval=True, competency_points=40)
+    submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.SUBMITTED, points_awarded=None)
+    repo = ReviewRepo(task, submission)
+    service = make_service(repo)
+
+    result = service.mentor_review(2, approved=False, feedback="Thieu phan ket luan")
+
+    assert result.status == SubmissionStatus.MENTOR_REJECTED
+    assert result.points_awarded is None
+
+def test_run_auto_check_completes_immediately_when_no_mentor_approval_required():
+    task = SimpleNamespace(id=1, requires_auto_check=True, requires_mentor_approval=False, competency_points=25)
+    submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.SUBMITTED, report_url="https://example.com/r")
+    repo = ReviewRepo(task, submission)
+    service = make_service(repo)
+
+    result = service.run_auto_check(2)
+
+    assert result.status == SubmissionStatus.COMPLETED
+    assert result.completed_by == CompletionActor.AI
+    assert result.points_awarded == 25
+
+def test_run_auto_check_stays_passed_when_mentor_approval_still_required():
+    task = SimpleNamespace(id=1, requires_auto_check=True, requires_mentor_approval=True, competency_points=25)
+    submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.SUBMITTED, report_url="https://example.com/r")
+    repo = ReviewRepo(task, submission)
+    service = make_service(repo)
+
+    result = service.run_auto_check(2)
+
+    assert result.status == SubmissionStatus.AUTO_CHECK_PASSED
+
+def test_run_auto_check_failure_unaffected_by_gate_config():
+    task = SimpleNamespace(id=1, requires_auto_check=True, requires_mentor_approval=False, competency_points=25)
+    submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.SUBMITTED, report_url=None)
+    repo = ReviewRepo(task, submission)
+    service = make_service(repo)
+
+    result = service.run_auto_check(2)
+
+    assert result.status == SubmissionStatus.AUTO_CHECK_FAILED
+
+def test_complete_submission_rejects_when_task_gate_would_auto_complete():
+    task = SimpleNamespace(id=1, requires_auto_check=False, requires_mentor_approval=True, competency_points=25)
+    submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.SUBMITTED)
+    repo = ReviewRepo(task, submission)
+    service = make_service(repo)
+
+    with pytest.raises(BusinessLogicException):
+        service.complete_submission(2, CompletionActor.MENTOR)
+
+def test_complete_submission_still_works_for_no_gate_task():
+    task = SimpleNamespace(id=1, requires_auto_check=False, requires_mentor_approval=False, competency_points=15)
+    submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.SUBMITTED)
+    repo = ReviewRepo(task, submission)
+    service = make_service(repo)
+
+    result = service.complete_submission(2, CompletionActor.AI)
+
+    assert result.status == SubmissionStatus.COMPLETED
+    assert result.points_awarded == 15
+
+def test_complete_submission_still_works_for_legacy_mentor_approved_row():
+    """Backward-compat: a submission stranded at MENTOR_APPROVED from before
+    mentor_review started auto-completing must still be finishable."""
+    task = SimpleNamespace(id=1, requires_auto_check=False, requires_mentor_approval=True, competency_points=25)
+    submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.MENTOR_APPROVED)
+    repo = ReviewRepo(task, submission)
+    service = make_service(repo)
+
+    result = service.complete_submission(2, CompletionActor.MENTOR)
+
+    assert result.status == SubmissionStatus.COMPLETED
 
 # ---- resolve_company_id: task creation must never fail on a missing/bad company_id ----
 

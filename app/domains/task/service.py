@@ -129,6 +129,9 @@ class TaskService:
 
         try:
             created = self.repo.create_task(data)
+        except ValueError as exc:
+            self.repo.db.rollback()
+            raise BusinessLogicException(str(exc)) from exc
         except IntegrityError as exc:
             # Safety net, not the primary fix: company_id is already resolved
             # to a real row above, so this should be rare in practice — but no
@@ -160,6 +163,13 @@ class TaskService:
         if task is None:
             raise EntityNotFoundException("Task", task_id)
         return task
+
+    def set_task_skills(self, task_id: int, skill_ids: List[int]):
+        task = self.get_task(task_id)
+        try:
+            return self.repo.set_task_skills(task, list(dict.fromkeys(skill_ids)))
+        except ValueError as exc:
+            raise BusinessLogicException(str(exc)) from exc
 
     def delete_task(self, task_id: int, force: bool = False) -> None:
         """Deletes a task. Evidence claims against it (or any of its
@@ -302,7 +312,7 @@ class TaskService:
             raw_reply = self.chatbot.complete([
                 {"role": "system", "content": TASK_PLANNING_SYSTEM_PROMPT},
                 {"role": "user", "content": self._build_planning_prompt(task)},
-            ])
+            ], json_mode=True)
             plan = self._parse_planning_output(raw_reply)
         except Exception:
             return
@@ -342,6 +352,7 @@ class TaskService:
                 "inputs": [],
                 "outputs": [],
                 "criteria": [],
+                "skill_ids": [skill.id for skill in getattr(task, "skills", [])],
             })
             # Sub-tasks are the actual joinable/completable unit here, so they
             # (not the root that just split) are what need a skill link.
@@ -393,7 +404,7 @@ class TaskService:
             raw_reply = self.chatbot.complete([
                 {"role": "system", "content": COMPLEXITY_ASSESSMENT_SYSTEM_PROMPT},
                 {"role": "user", "content": self._build_complexity_prompt(data)},
-            ])
+            ], json_mode=True)
             plan = self._parse_planning_output(raw_reply)
         except Exception:
             return None
@@ -444,8 +455,15 @@ class TaskService:
         return fallback
 
     # ---- Submission workflow ----
-    # State machine: JOINED -> SUBMITTED -> AUTO_CHECK_PASSED|AUTO_CHECK_FAILED
-    #                       -> MENTOR_APPROVED|MENTOR_REJECTED -> COMPLETED
+    # State machine: JOINED -> SUBMITTED -> AUTO_CHECK_PASSED|AUTO_CHECK_FAILED -> MENTOR_REJECTED|COMPLETED
+    # Whichever gate a task actually requires (auto-check and/or mentor
+    # approval) is always the LAST step, so passing/approving completes the
+    # submission immediately (points_awarded + completed_at) rather than
+    # resting at an intermediate "approved but not completed" status that
+    # needs a separate call to close out — requirements.md's Mentor
+    # functional requirements table has no distinct "close submission" action
+    # after "Approve Submission" (MEN-16), and the Student Task Flow (§11)
+    # ends at "Mentor Review" with no further explicit step either.
     # AUTO_CHECK_FAILED/MENTOR_REJECTED both loop back to allow a fresh SUBMITTED.
 
     def join_task(self, task_id: int, student_id: int):
@@ -534,9 +552,24 @@ class TaskService:
         the state transition, not to fully specify unstated grading logic."""
         submission = self._get_submission_or_404(submission_id)
         self._require_status(submission, {SubmissionStatus.SUBMITTED})
+        task = self.get_task(submission.task_id)
 
         passed = bool(submission.report_url)
         result = {"passed": passed, "reason": "report_url present" if passed else "report_url missing"}
+
+        if passed and not task.requires_mentor_approval:
+            # No mentor gate configured for this task — auto-check passing is
+            # the terminal step, so complete right away instead of leaving
+            # the submission stranded at AUTO_CHECK_PASSED with no mentor
+            # ever going to call the separate /complete endpoint on it.
+            completed = self.repo.update_submission(
+                submission_id, auto_check_result=result, status=SubmissionStatus.COMPLETED,
+                completed_by=CompletionActor.AI, points_awarded=task.competency_points,
+                completed_at=datetime.utcnow(),
+            )
+            self._draft_evidence_for_completion(completed, task)
+            return completed
+
         return self.repo.update_submission(
             submission_id,
             auto_check_result=result,
@@ -550,12 +583,31 @@ class TaskService:
         if task.requires_auto_check:
             expected.add(SubmissionStatus.AUTO_CHECK_PASSED)
         self._require_status(submission, expected)
-        return self.repo.update_submission(
+
+        if not approved:
+            return self.repo.update_submission(
+                submission_id,
+                mentor_feedback=feedback,
+                mentor_decision_at=datetime.utcnow(),
+                status=SubmissionStatus.MENTOR_REJECTED,
+            )
+
+        # Mentor approval is always the final gate whenever a mentor is
+        # involved at all (requires_mentor_approval=True is why this method
+        # is being called) — complete immediately instead of leaving the
+        # submission at MENTOR_APPROVED waiting on a separate, easy-to-miss
+        # /complete call that a caller may never make (see complete_submission).
+        completed = self.repo.update_submission(
             submission_id,
             mentor_feedback=feedback,
             mentor_decision_at=datetime.utcnow(),
-            status=SubmissionStatus.MENTOR_APPROVED if approved else SubmissionStatus.MENTOR_REJECTED,
+            status=SubmissionStatus.COMPLETED,
+            completed_by=CompletionActor.MENTOR,
+            points_awarded=task.competency_points,
+            completed_at=datetime.utcnow(),
         )
+        self._draft_evidence_for_completion(completed, task)
+        return completed
 
     def score_criterion(self, submission_id: int, criterion_id: int, score_percent: int, feedback: Optional[str], scored_by: CompletionActor):
         submission = self._get_submission_or_404(submission_id)
@@ -569,13 +621,23 @@ class TaskService:
         return self.repo.get_scores_for_submission(submission_id)
 
     def complete_submission(self, submission_id: int, completed_by: CompletionActor):
+        """mentor_review/run_auto_check now complete a submission automatically
+        the moment their configured gate passes (see above) — each is always
+        the final step whenever it applies, so this endpoint is only still
+        reachable for: (a) a task requiring neither gate at all (completes
+        straight from SUBMITTED — the caller has to say who's completing it,
+        since nothing evaluated it), or (b) a submission stranded at
+        MENTOR_APPROVED from before auto-completion shipped."""
         submission = self._get_submission_or_404(submission_id)
         task = self.get_task(submission.task_id)
 
-        if task.requires_mentor_approval:
+        if submission.status == SubmissionStatus.MENTOR_APPROVED:
             expected = {SubmissionStatus.MENTOR_APPROVED}
-        elif task.requires_auto_check:
-            expected = {SubmissionStatus.AUTO_CHECK_PASSED}
+        elif task.requires_auto_check or task.requires_mentor_approval:
+            raise BusinessLogicException(
+                f"Submission {submission_id}'s task completes automatically once its configured gate "
+                "(auto-check and/or mentor approval) passes — this endpoint doesn't apply here."
+            )
         else:
             expected = {SubmissionStatus.SUBMITTED}
         self._require_status(submission, expected)

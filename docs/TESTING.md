@@ -19,7 +19,7 @@ Không cần chạy `alembic upgrade head` trước — `AUTO_CREATE_SCHEMA=true
 uv run --project .. pytest -q
 ```
 
-103 test hiện có, chia theo file:
+121 test hiện có, chia theo file:
 
 | File | Domain | Nội dung |
 |---|---|---|
@@ -28,7 +28,7 @@ uv run --project .. pytest -q
 | `test_task_service.py` | task | AI complexity/sub-task planning, nesting depth, progress rollup, `skip_ai_planning` |
 | `test_task_review.py` | task | Risk-level gate (R2/R3 chặn APPROVED), `join_task` yêu cầu `APPROVED` |
 | `test_task_submission_extras.py` | task | `elapsed_seconds`, `student_reflection`, giới hạn file upload |
-| `test_task_builder_service.py` | task_builder | AI turn parsing, `generate_task` (qua `TaskService.create_task(skip_ai_planning=True)`) |
+| `test_task_builder_service.py` | task_builder | AI turn parsing, giới hạn 3 câu hỏi, `confirm`, `generate_task` (qua `TaskService.create_task(skip_ai_planning=False)`, có thể tự tách sub-task) |
 | `test_evidence_service.py` | evidence | State machine `AI_DRAFT→...→VERIFIED`, cập nhật skill profile chỉ khi `VERIFIED` |
 
 Toàn bộ dùng pattern bypass DB session: `object.__new__(Service)` rồi gán `.repo`/`.chatbot` là fake object — test logic thuần, không cần DB/LLM thật. Xem code các file trên để viết test tương tự cho domain mới.
@@ -91,6 +91,8 @@ curl -X POST http://127.0.0.1:8000/tasks/ \
   -d '{"title":"Task khong ro cong ty","estimated_hours_min":1,"estimated_hours_max":2,"competency_points":10,"context":"ctx","complexity_level":"T1","skip_ai_planning":true}'
 # -> 200, company_id trong response trỏ tới company placeholder, không phải lỗi
 ```
+
+**`created_at`/`updated_at`/`deadline`**: `GET /tasks/` giờ trả về `created_at` (tự sinh lúc tạo), `updated_at` (tự cập nhật mỗi lần task bị sửa — mentor review, AI planning), và `deadline` (optional, hạn mong muốn của doanh nghiệp, truyền vào lúc tạo qua `POST /tasks/` hoặc do AI Task Builder tự trích xuất từ brief). `GET /tasks/` mặc định sắp theo `created_at` giảm dần (task mới nhất lên đầu) — không cần FE tự sort theo `id` nữa.
 
 **Risk gate** ([requirements.md §4.2](requirements.md#42-task-risk--r-level)):
 ```bash
@@ -204,12 +206,14 @@ curl -X POST http://127.0.0.1:8000/task-builder/conversations/<id>/messages \
 ```bash
 curl -X POST http://127.0.0.1:8000/task-builder/conversations/<id>/generate-task -d '{"selected_version": "L1"}'
 ```
-**Kỳ vọng**: `created_task` khớp phiên bản đã chọn; `GET /tasks/{created_task.id}` cho thấy `sub_tasks: []` (không tự tách thêm — `generate_task` gọi `TaskService.create_task(..., skip_ai_planning=True)`) và `review_status: PENDING_MENTOR_APPROVAL` (vẫn phải qua duyệt mentor bình thường, không bypass). Nếu phiên bản AI đề xuất còn thiếu `complexity_level`/giờ ước tính/điểm năng lực (thường gặp sau `confirm: true`), các field này tự điền mặc định (`T1`/1/4/10 — `VERSION_FIELD_DEFAULTS`) thay vì trả lỗi; chỉ `title`/`context` là bắt buộc thật sự, thiếu 1 trong 2 mới `400`.
+**Kỳ vọng**: `created_task` khớp phiên bản đã chọn; `review_status: PENDING_MENTOR_APPROVAL` (vẫn phải qua duyệt mentor bình thường, không bypass). Nếu phiên bản AI đề xuất còn thiếu `complexity_level`/giờ ước tính/điểm năng lực (thường gặp sau `confirm: true`), các field này tự điền mặc định (`T1`/1/4/10 — `VERSION_FIELD_DEFAULTS`) thay vì trả lỗi; chỉ `title`/`context` là bắt buộc thật sự, thiếu 1 trong 2 mới `400`.
+
+**`sub_tasks` (kể từ khi bật AI planning cho generate_task)**: `generate_task` gọi `TaskService.create_task(..., skip_ai_planning=False)` — task tạo ra vẫn đi qua `_ai_plan_subtasks` như task tạo thủ công, nên `GET /tasks/{created_task.id}` có thể trả về `sub_tasks: []` (task đủ gọn) hoặc vài sub-task (nếu AI thấy phiên bản quá rộng cho 1 lần nộp) — không tất định, phụ thuộc model. `complexity_level` đã chọn qua hội thoại **không** bị AI ghi đè (`override_complexity=False` khi `complexity_level` đã có sẵn).
 
 ### Checklist
 - [ ] `status` chuyển đúng `COLLECTING → READY → TASK_CREATED`
 - [ ] `generate-task` khi chưa `READY` → `400`; `selected_version` không tồn tại → `400`
-- [ ] Task tạo ra có `sub_tasks: []` và `review_status: PENDING_MENTOR_APPROVAL`
+- [ ] Task tạo ra có `review_status: PENDING_MENTOR_APPROVAL`; `complexity_level` khớp đúng phiên bản đã chọn (không bị AI planning ghi đè)
 - [ ] Gửi `confirm: true` ở lượt đầu tiên → `status: "READY"` ngay, không cần đủ 3 vòng hỏi
 - [ ] `generate-task` với phiên bản thiếu `complexity_level`/giờ/điểm → vẫn `200`, tự điền mặc định; thiếu `title`/`context` → vẫn `400`
 - [ ] `pytest app/tests/unit/test_task_builder_service.py` pass

@@ -123,6 +123,9 @@ class CareerSkillRequirement(Base):
 
 class StudentCareerRecommendation(Base):
     __tablename__ = "student_career_recommendations"
+    __table_args__ = (
+        UniqueConstraint("student_id", "career_id", name="uq_student_career_recommendation"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), index=True)
@@ -134,7 +137,12 @@ class StudentCareerRecommendation(Base):
     next_steps: Mapped[str | None] = mapped_column(Text, nullable=True)
     generated_by: Mapped[str] = mapped_column(
         String(80),
-        default=RecommendationGenerator.RULE_BASED_V1.value,
+        default=RecommendationGenerator.LLM_V1.value,
     )
     status: Mapped[str] = mapped_column(String(32), default=RecommendationStatus.DRAFT.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

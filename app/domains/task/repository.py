@@ -33,13 +33,35 @@ class TaskRepository:
         inputs_data = data.pop("inputs", [])
         outputs_data = data.pop("outputs", [])
         criteria_data = data.pop("criteria", [])
+        skill_ids = data.pop("skill_ids", [])
 
         task = Task(**data)
         task.inputs = [TaskInput(**d) for d in inputs_data]
         task.outputs = [TaskOutput(**d) for d in outputs_data]
         task.criteria = [TaskEvaluationCriterion(**d) for d in criteria_data]
+        if skill_ids:
+            # Lazy import keeps the task repository independent from the
+            # market repository while still validating the FK targets.
+            from domains.market.models import Skill
+            task.skills = self.db.query(Skill).filter(Skill.id.in_(skill_ids)).all()
+            found_ids = {skill.id for skill in task.skills}
+            missing_ids = set(skill_ids) - found_ids
+            if missing_ids:
+                raise ValueError(f"Unknown skill_ids: {sorted(missing_ids)}")
 
         self.db.add(task)
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
+    def set_task_skills(self, task: Task, skill_ids: List[int]) -> Task:
+        from domains.market.models import Skill
+        skills = self.db.query(Skill).filter(Skill.id.in_(skill_ids)).all() if skill_ids else []
+        found_ids = {skill.id for skill in skills}
+        missing_ids = set(skill_ids) - found_ids
+        if missing_ids:
+            raise ValueError(f"Unknown skill_ids: {sorted(missing_ids)}")
+        task.skills = skills
         self.db.commit()
         self.db.refresh(task)
         return task
@@ -66,7 +88,7 @@ class TaskRepository:
             query = query.filter(Task.company_id == company_id)
         if review_status:
             query = query.filter(Task.review_status == review_status)
-        return query.all()
+        return query.order_by(Task.created_at.desc()).all()
 
     def get_sub_tasks(self, parent_task_id: int) -> List[Task]:
         return (

@@ -65,16 +65,18 @@ def make_service(db, chatbot):
 
 
 def complete_full_lifecycle(service: TaskService, task_id: int, student_id: int):
-    """Drives a task through review -> join -> submit -> mentor-review ->
-    complete, returning the final submission."""
+    """Drives a task through review -> join -> submit -> mentor-review,
+    returning the final submission. mentor_review completes the submission
+    itself the moment it approves (mentor approval is always the final gate
+    when a mentor is involved at all) — there's no separate complete_submission
+    call needed/allowed afterward."""
     service.review_task(
         task_id, reviewer_id=1, decision=TaskReviewStatus.APPROVED,
         approved_complexity=None, approved_risk=None, approved_evidence_level=None, comment=None,
     )
     submission = service.join_task(task_id, student_id)
     service.submit_report(task_id, student_id, report_url="https://example.com/report")
-    service.mentor_review(submission.id, approved=True, feedback="Looks good")
-    return service.complete_submission(submission.id, completed_by=CompletionActor.MENTOR)
+    return service.mentor_review(submission.id, approved=True, feedback="Looks good")
 
 
 # ---- AI skill-linking at creation time ----

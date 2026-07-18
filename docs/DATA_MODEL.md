@@ -36,7 +36,9 @@ Doanh nghiệp tài trợ task. `slug` unique dùng cho route URL-friendly. `is_
 | **risk_level** | enum `TaskRiskLevel` (R0/R1/R2/R3) | R-level; R2/R3 tồn tại trong enum (không như T4/T5 bị loại khỏi `TaskComplexity`) vì rule chặn là runtime gate, không phải giới hạn kiểu dữ liệu |
 | **target_evidence_level** | enum `EvidenceLevel` (L1-L5) | mức skill task này nhắm tới tạo evidence |
 | **review_status** | enum `TaskReviewStatus` | `PENDING_MENTOR_APPROVAL` (default) → `APPROVED`/`REJECTED`/`NEED_MORE_INFO`. Task chỉ join được khi `APPROVED` |
+| **deadline** | datetime, nullable | Hạn mong muốn của doanh nghiệp ([requirements.md §7.1](requirements.md#7-task-creation-data) — Business Input) — display/planning only, không có backend gate nào gắn vào. Khác với `TaskAssignment.due_at` ở §13 (hạn theo từng lượt student nhận task) — MVP hiện chưa có field đó |
 | created_at | datetime | |
+| **updated_at** | datetime | tự cập nhật (`onupdate`) mỗi khi task bị sửa — mentor review ghi đè complexity/risk, hoặc AI planning ghi đè complexity_level |
 
 > **Về việc gộp `difficulty` → `complexity_level`**: bản đầu tiên của domain `task` (trước khi map theo `requirements.md`) có field `difficulty` (EASY/MEDIUM/HARD) độc lập với T-level. Hai field mô tả cùng một khái niệm nên đã được gộp — `complexity_level` (T1-T3) là field duy nhất còn lại, dùng cho cả AI auto-assess lẫn mentor override. Đừng tái tạo lại field `difficulty`.
 

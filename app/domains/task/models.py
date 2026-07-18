@@ -105,15 +105,19 @@ class Task(Base):
     requires_mentor_approval: Mapped[bool] = mapped_column(default=True)
     mentor_approval_sla_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     data_privacy_notice: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    # Business's desired completion date (requirements.md §7.1 Business Input's
+    # `deadline`) — optional, display/planning only, no backend gate enforces
+    # it (distinct from a per-assignment due_at, which this MVP doesn't have).
+    deadline: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     # Milestones a student is expected to hit while working outside WORKLAB
     # (requirements.md §7.2's AI Structured Task Output) — display-only, no
     # backend gate is tied to them (no Work Session/progress tracking in MVP).
     checkpoints: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    # Bumped automatically whenever this row is updated (mentor review
+    # overriding complexity/risk, AI planning setting complexity_level) — no
+    # extra code needed at the call sites, SQLAlchemy sets it on flush.
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
-    # Optional deadline a business can attach to a task; display-only in this
-    # MVP, same as checkpoints above — no backend gate is tied to it.
-    deadline: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     # T-level / R-level / target skill level as proposed by the business or AI
     # at creation time; a mentor review (see TaskReview below) can override
@@ -135,6 +139,19 @@ class Task(Base):
     outputs = relationship("TaskOutput", back_populates="task", cascade="all, delete-orphan")
     criteria = relationship("TaskEvaluationCriterion", back_populates="task", cascade="all, delete-orphan")
     reviews = relationship("TaskReview", back_populates="task", cascade="all, delete-orphan")
+    skills = relationship("Skill", secondary="task_skills")
+
+class TaskSkill(Base):
+    """Curated skills exercised by a task.
+
+    This is deliberately separate from EvidenceClaim: task skills describe
+    what the task exercises, while evidence describes what a reviewer has
+    actually verified for one student's submission.
+    """
+    __tablename__ = "task_skills"
+
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    skill_id: Mapped[int] = mapped_column(ForeignKey("skills.id"), primary_key=True)
 
 class TaskInput(Base):
     __tablename__ = "task_inputs"
@@ -171,18 +188,6 @@ class TaskEvaluationCriterion(Base):
     weight_percent: Mapped[int] = mapped_column(Integer)
 
     task = relationship("Task", back_populates="criteria")
-
-class TaskSkill(Base):
-    """Which skill(s) a Task builds — populated by AI right after task
-    creation (see TaskService._ai_link_skills) and read back at completion
-    time to know which skill(s) to draft evidence for (see
-    TaskService._draft_evidence_for_completion). Not a FK-backed
-    relationship() on Task: nothing currently needs to load it eagerly
-    alongside a Task the way inputs/outputs/criteria do."""
-    __tablename__ = "task_skills"
-
-    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
-    skill_id: Mapped[int] = mapped_column(ForeignKey("skills.id"), primary_key=True)
 
 class TaskReview(Base):
     """One mentor decision on a Task itself — approve/reject/request-more-info

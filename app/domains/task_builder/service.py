@@ -40,7 +40,10 @@ TASK_BUILDER_SYSTEM_PROMPT = (
     "\"open_questions\": [str, ...], \"proposed_versions\": [{\"version_label\": str, "
     "\"title\": str, \"context\": str, \"complexity_level\": \"T1\"|\"T2\"|\"T3\", "
     "\"estimated_hours_min\": int, \"estimated_hours_max\": int, \"competency_points\": int, "
-    "\"scope_included\": [str, ...], \"scope_excluded\": [str, ...]}]}. "
+    "\"scope_included\": [str, ...], \"scope_excluded\": [str, ...], "
+    "\"deadline\": str|null}]}. deadline is an ISO 8601 datetime if the enterprise mentioned a "
+    "desired completion date anywhere in the brief, otherwise null — never ask a clarifying "
+    "question just to obtain it. "
     "open_questions must list only questions still unanswered (empty once status is "
     "\"ready\"); proposed_versions must be [] unless status is \"ready\". Keep the same "
     "language (Vietnamese or English) as the enterprise's messages."
@@ -281,22 +284,27 @@ class TaskBuilderService:
                 title=version["title"],
                 complexity_level=version["complexity_level"],
                 company_id=conversation.company_id,
-                skip_ai_planning=True,
+                skip_ai_planning=False,
                 estimated_hours_min=version["estimated_hours_min"],
                 estimated_hours_max=version["estimated_hours_max"],
                 competency_points=version["competency_points"],
                 context=version["context"],
                 scope_included=version.get("scope_included") or [],
                 scope_excluded=version.get("scope_excluded") or [],
+                deadline=version.get("deadline"),
             )
         except ValidationError as exc:
             raise BusinessLogicException(f"Proposed version '{selected_version}' has invalid data: {exc}") from exc
 
-        # skip_ai_planning=True above means this goes through the normal
-        # TaskService.create_task() without triggering its AI planning pass
-        # (task/service.py's _ai_plan_subtasks) — this conversation has already
-        # scoped exactly one task version, so it must be created as-is, not
-        # further split by a second, uncoordinated AI call.
+        # skip_ai_planning=False: TaskService.create_task now runs its normal
+        # AI planning pass (_ai_plan_subtasks) on the generated task too, so a
+        # version that's genuinely too broad for one submission still gets
+        # split into sub-tasks with incremental points, the same as a
+        # manually-created task would. complexity_level is already set from
+        # the conversation's chosen version above, and create_task passes
+        # override_complexity=False whenever complexity_level was explicitly
+        # given — so this second AI call can still propose a split, but can't
+        # clobber the T-level the enterprise already agreed to in the chat.
         created_task = self.task_service.create_task(task_create)
 
         ai_message = f"Đã tạo task '{created_task.title}' (phiên bản {selected_version}), mã #{created_task.id}."
