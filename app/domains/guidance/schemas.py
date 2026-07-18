@@ -1,12 +1,8 @@
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
-from enum import Enum
-
-class PathType(str, Enum):
-    UNIVERSITY = "UNIVERSITY"
-    VOCATIONAL = "VOCATIONAL"
-    SHORT_COURSE = "SHORT_COURSE"
+# Re-exported (not redefined) — see market/schemas.py for why.
+from .models import PathType  # noqa: F401
 
 class EducationPathBase(BaseModel):
     name: str

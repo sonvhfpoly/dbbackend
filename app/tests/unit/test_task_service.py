@@ -2,7 +2,7 @@ import pytest
 from types import SimpleNamespace
 from core.exceptions import BusinessLogicException
 from domains.task.service import TaskService
-from domains.task.models import SubmissionStatus, TaskDifficulty
+from domains.task.models import SubmissionStatus, TaskComplexity
 
 def make_service(repo, chatbot=None):
     """TaskService.__init__ opens a real DB session via TaskRepository(db) —
@@ -59,9 +59,10 @@ class FakeChatbot:
 
 def make_root_task(id=1):
     return SimpleNamespace(
-        id=id, title="Phan tich hanh vi khach hang", parent_task_id=None, difficulty=TaskDifficulty.MEDIUM,
+        id=id, title="Phan tich hanh vi khach hang", parent_task_id=None, complexity_level=TaskComplexity.T2,
         company_id=1, context="Phan tich du lieu", scope_included=[], scope_excluded=[],
         estimated_hours_min=5, estimated_hours_max=10, competency_points=50,
+        risk_level=None, target_evidence_level=None,
     )
 
 # ---- AI sub-task planning ----
@@ -69,9 +70,9 @@ def make_root_task(id=1):
 def test_ai_plan_subtasks_creates_subtasks_and_nulls_parent_points_when_should_split():
     task = make_root_task()
     repo = FakeRepo(tasks={task.id: task})
-    reply = '{"difficulty": "HARD", "should_split": true, "sub_tasks": [' \
-            '{"title": "Sub 1", "context": "ctx 1", "estimated_hours_min": 2, "estimated_hours_max": 4, "competency_points": 20, "difficulty": "EASY"}, ' \
-            '{"title": "Sub 2", "context": "ctx 2", "estimated_hours_min": 3, "estimated_hours_max": 5, "competency_points": 30, "difficulty": "MEDIUM"}' \
+    reply = '{"complexity_level": "T3", "should_split": true, "sub_tasks": [' \
+            '{"title": "Sub 1", "context": "ctx 1", "estimated_hours_min": 2, "estimated_hours_max": 4, "competency_points": 20, "complexity_level": "T1"}, ' \
+            '{"title": "Sub 2", "context": "ctx 2", "estimated_hours_min": 3, "estimated_hours_max": 5, "competency_points": 30, "complexity_level": "T2"}' \
             ']}'
     service = make_service(repo, chatbot=FakeChatbot(reply))
 
@@ -79,13 +80,13 @@ def test_ai_plan_subtasks_creates_subtasks_and_nulls_parent_points_when_should_s
 
     assert len(repo.created_tasks) == 2
     assert all(t.parent_task_id == task.id for t in repo.created_tasks)
-    assert task.difficulty == TaskDifficulty.HARD
+    assert task.complexity_level == TaskComplexity.T3
     assert task.competency_points is None  # rolled up from sub-tasks now
 
 def test_ai_plan_subtasks_noop_when_should_split_false():
     task = make_root_task()
     repo = FakeRepo(tasks={task.id: task})
-    reply = '{"difficulty": "MEDIUM", "should_split": false, "sub_tasks": []}'
+    reply = '{"complexity_level": "T2", "should_split": false, "sub_tasks": []}'
     service = make_service(repo, chatbot=FakeChatbot(reply))
 
     service._ai_plan_subtasks(task)
@@ -112,77 +113,105 @@ def test_ai_plan_subtasks_swallows_unparseable_reply():
 
     assert repo.created_tasks == []
 
-def test_ai_plan_subtasks_does_not_touch_difficulty_when_override_disabled():
+def test_ai_plan_subtasks_does_not_touch_complexity_when_override_disabled():
     task = make_root_task()
-    task.difficulty = TaskDifficulty.EASY  # caller-provided value
+    task.complexity_level = TaskComplexity.T1  # caller-provided value
     repo = FakeRepo(tasks={task.id: task})
-    reply = '{"difficulty": "HARD", "should_split": false, "sub_tasks": []}'
+    reply = '{"complexity_level": "T3", "should_split": false, "sub_tasks": []}'
     service = make_service(repo, chatbot=FakeChatbot(reply))
 
-    service._ai_plan_subtasks(task, override_difficulty=False)
+    service._ai_plan_subtasks(task, override_complexity=False)
 
-    assert task.difficulty == TaskDifficulty.EASY  # AI's "HARD" opinion ignored
+    assert task.complexity_level == TaskComplexity.T1  # AI's "T3" opinion ignored
 
-# ---- AI difficulty-only assessment (used for sub-tasks) ----
+def test_ai_plan_subtasks_skipped_entirely_when_skip_true():
+    task = make_root_task()
+    task.complexity_level = TaskComplexity.T1
+    repo = FakeRepo(tasks={task.id: task})
+    # No chatbot configured at all — if skip didn't short-circuit before the
+    # chatbot call, this would raise AttributeError instead of a clean no-op.
+    service = make_service(repo, chatbot=None)
 
-def test_ai_assess_difficulty_returns_ai_value():
-    service = make_service(FakeRepo(), chatbot=FakeChatbot('{"difficulty": "HARD"}'))
+    service._ai_plan_subtasks(task, skip=True)
 
-    result = service._ai_assess_difficulty({"title": "t", "context": "c", "estimated_hours_min": 1, "estimated_hours_max": 2})
+    assert repo.created_tasks == []
+    assert task.complexity_level == TaskComplexity.T1
 
-    assert result == TaskDifficulty.HARD
+# ---- AI complexity-only assessment (used for sub-tasks) ----
 
-def test_ai_assess_difficulty_returns_none_on_chatbot_error():
+def test_ai_assess_complexity_returns_ai_value():
+    service = make_service(FakeRepo(), chatbot=FakeChatbot('{"complexity_level": "T3"}'))
+
+    result = service._ai_assess_complexity({"title": "t", "context": "c", "estimated_hours_min": 1, "estimated_hours_max": 2})
+
+    assert result == TaskComplexity.T3
+
+def test_ai_assess_complexity_returns_none_on_chatbot_error():
     service = make_service(FakeRepo(), chatbot=FakeChatbot(RuntimeError("down")))
 
-    result = service._ai_assess_difficulty({"title": "t"})
+    result = service._ai_assess_complexity({"title": "t"})
 
     assert result is None
 
-# ---- create_task: difficulty is optional, AI fills it in when null ----
+# ---- create_task: complexity_level is optional, AI fills it in when null ----
 
-def test_create_task_fills_null_difficulty_via_ai_for_subtask():
+def test_create_task_fills_null_complexity_via_ai_for_subtask():
     from domains.task.schemas import TaskCreate
 
     root = make_task(id=1)
     repo = FakeRepo(tasks={1: root})
-    service = make_service(repo, chatbot=FakeChatbot('{"difficulty": "HARD"}'))
+    service = make_service(repo, chatbot=FakeChatbot('{"complexity_level": "T3"}'))
 
     created = service.create_task(TaskCreate(
-        title="Sub without difficulty", difficulty=None, company_id=1,
+        title="Sub without complexity_level", complexity_level=None, company_id=1,
         parent_task_id=1, estimated_hours_min=1, estimated_hours_max=2,
         competency_points=10, context="ctx",
     ))
 
-    assert created.difficulty.value == "HARD"
+    assert created.complexity_level.value == "T3"
 
-def test_create_task_root_keeps_explicit_difficulty_despite_ai_opinion():
+def test_create_task_root_keeps_explicit_complexity_despite_ai_opinion():
     from domains.task.schemas import TaskCreate
 
     repo = FakeRepo()
-    reply = '{"difficulty": "HARD", "should_split": false, "sub_tasks": []}'
+    reply = '{"complexity_level": "T3", "should_split": false, "sub_tasks": []}'
     service = make_service(repo, chatbot=FakeChatbot(reply))
 
     created = service.create_task(TaskCreate(
-        title="Root with explicit difficulty", difficulty="EASY", company_id=1,
+        title="Root with explicit complexity", complexity_level="T1", company_id=1,
         estimated_hours_min=1, estimated_hours_max=2, competency_points=10, context="ctx",
     ))
 
-    assert created.difficulty.value == "EASY"  # NOT overridden by the AI's "HARD"
+    assert created.complexity_level.value == "T1"  # NOT overridden by the AI's "T3"
 
-def test_create_task_root_uses_ai_difficulty_when_null():
+def test_create_task_root_uses_ai_complexity_when_null():
     from domains.task.schemas import TaskCreate
 
     repo = FakeRepo()
-    reply = '{"difficulty": "HARD", "should_split": false, "sub_tasks": []}'
+    reply = '{"complexity_level": "T3", "should_split": false, "sub_tasks": []}'
     service = make_service(repo, chatbot=FakeChatbot(reply))
 
     created = service.create_task(TaskCreate(
-        title="Root without difficulty", difficulty=None, company_id=1,
+        title="Root without complexity_level", complexity_level=None, company_id=1,
         estimated_hours_min=1, estimated_hours_max=2, competency_points=10, context="ctx",
     ))
 
-    assert created.difficulty.value == "HARD"
+    assert created.complexity_level.value == "T3"
+
+def test_create_task_root_skip_ai_planning_uses_default_and_never_calls_chatbot():
+    from domains.task.schemas import TaskCreate
+
+    repo = FakeRepo()
+    service = make_service(repo, chatbot=None)  # would raise AttributeError if called
+
+    created = service.create_task(TaskCreate(
+        title="Root, AI planning skipped", complexity_level=None, company_id=1,
+        estimated_hours_min=1, estimated_hours_max=2, competency_points=10, context="ctx",
+        skip_ai_planning=True,
+    ))
+
+    assert created.complexity_level == TaskComplexity.T1  # default, not AI-assessed
+    assert repo.created_tasks == [created]  # no sub-tasks spawned
 
 # ---- submit_report scoped by (task_id, student_id) ----
 

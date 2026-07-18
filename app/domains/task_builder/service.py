@@ -4,8 +4,8 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from core.exceptions import BusinessLogicException, EntityNotFoundException
 from domains.chatbot.service import ChatbotService
-from domains.task.repository import TaskRepository
 from domains.task.schemas import TaskCreate
+from domains.task.service import TaskService
 from .models import TBConversation, ConversationStatus, MessageRole
 from .repository import TaskBuilderRepository
 from .storage import extract_text, upload_document
@@ -30,7 +30,7 @@ TASK_BUILDER_SYSTEM_PROMPT = (
     "Respond with ONLY a JSON object, no prose, no markdown code fences, in exactly this "
     "shape: {\"status\": \"collecting\"|\"ready\", \"reply\": str, "
     "\"open_questions\": [str, ...], \"proposed_versions\": [{\"version_label\": str, "
-    "\"title\": str, \"context\": str, \"difficulty\": \"EASY\"|\"MEDIUM\"|\"HARD\", "
+    "\"title\": str, \"context\": str, \"complexity_level\": \"T1\"|\"T2\"|\"T3\", "
     "\"estimated_hours_min\": int, \"estimated_hours_max\": int, \"competency_points\": int, "
     "\"scope_included\": [str, ...], \"scope_excluded\": [str, ...]}]}. "
     "open_questions must list only questions still unanswered (empty once status is "
@@ -39,15 +39,27 @@ TASK_BUILDER_SYSTEM_PROMPT = (
 )
 
 REQUIRED_VERSION_FIELDS = [
-    "title", "context", "difficulty", "estimated_hours_min", "estimated_hours_max", "competency_points",
+    "title", "context", "complexity_level", "estimated_hours_min", "estimated_hours_max", "competency_points",
 ]
+
+# Sent back to the model when its reply couldn't be parsed as JSON, asking it
+# to try again in the same turn — see _complete_and_parse.
+JSON_RETRY_INSTRUCTION = (
+    "Phản hồi trước không phải một JSON object hợp lệ. Hãy trả lời LẠI, "
+    "CHỈ bằng một JSON object đúng định dạng đã yêu cầu ở system prompt, "
+    "không kèm lời giải thích, markdown, hay bất kỳ text nào khác ngoài JSON."
+)
+
+FALLBACK_REPLY = (
+    "Xin lỗi, tôi gặp sự cố khi xử lý phản hồi vừa rồi. Bạn có thể thử diễn đạt lại yêu cầu được không?"
+)
 
 
 class TaskBuilderService:
     def __init__(self, db: Session):
         self.db = db
         self.repo = TaskBuilderRepository(db)
-        self.task_repo = TaskRepository(db)
+        self.task_service = TaskService(db)
         self.chatbot = ChatbotService()
 
     # ---- Conversation turns ----
@@ -65,8 +77,25 @@ class TaskBuilderService:
     def _run_ai_turn(self, conversation_id: int) -> dict:
         conversation = self._get_conversation_or_404(conversation_id)
         ai_messages = self._build_ai_messages(conversation)
-        raw_reply = self.chatbot.complete(ai_messages)
-        parsed = self._parse_ai_output(raw_reply)
+        parsed = self._complete_and_parse(ai_messages)
+
+        if parsed is None:
+            # Both the JSON-mode call and the corrective retry failed to
+            # produce parseable JSON (models don't always honor json_mode,
+            # especially on sensitive-sounding input like a "bank credit
+            # contract"). Degrade gracefully instead of dead-ending the
+            # conversation with a 400: the enterprise's message the caller
+            # already persisted stays usable, status is left untouched, and
+            # the user just sees an AI turn asking them to rephrase — not a
+            # stuck conversation they can't recover from.
+            self.repo.add_message(conversation_id, MessageRole.AI, FALLBACK_REPLY, open_questions=[], proposed_versions=[])
+            return {
+                "conversation_id": conversation_id,
+                "status": conversation.status,
+                "reply": FALLBACK_REPLY,
+                "open_questions": [],
+                "proposed_versions": [],
+            }
 
         new_status = ConversationStatus.READY if parsed.get("status") == "ready" else ConversationStatus.COLLECTING
         open_questions = parsed.get("open_questions") or []
@@ -86,6 +115,29 @@ class TaskBuilderService:
             "open_questions": open_questions,
             "proposed_versions": proposed_versions,
         }
+
+    def _complete_and_parse(self, ai_messages: List[dict]) -> Optional[dict]:
+        """Calls the chatbot with json_mode=True (provider-level JSON
+        constraint, see domains/chatbot/providers.py) and parses the reply.
+        On a parse failure, retries once with a corrective instruction added
+        to the conversation. Returns None (not an exception) if both attempts
+        fail to parse — a JSON-format failure is the caller's cue to degrade
+        gracefully, not a request the client did anything wrong to cause."""
+        raw_reply = self.chatbot.complete(ai_messages, json_mode=True)
+        try:
+            return self._parse_ai_output(raw_reply)
+        except BusinessLogicException:
+            pass
+
+        retry_messages = ai_messages + [
+            {"role": "assistant", "content": raw_reply},
+            {"role": "user", "content": JSON_RETRY_INSTRUCTION},
+        ]
+        retry_reply = self.chatbot.complete(retry_messages, json_mode=True)
+        try:
+            return self._parse_ai_output(retry_reply)
+        except BusinessLogicException:
+            return None
 
     def _build_ai_messages(self, conversation: TBConversation) -> List[dict]:
         messages = [{"role": "system", "content": TASK_BUILDER_SYSTEM_PROMPT}]
@@ -170,8 +222,9 @@ class TaskBuilderService:
         try:
             task_create = TaskCreate(
                 title=version["title"],
-                difficulty=version["difficulty"],
+                complexity_level=version["complexity_level"],
                 company_id=conversation.company_id,
+                skip_ai_planning=True,
                 estimated_hours_min=version["estimated_hours_min"],
                 estimated_hours_max=version["estimated_hours_max"],
                 competency_points=version["competency_points"],
@@ -182,12 +235,12 @@ class TaskBuilderService:
         except ValidationError as exc:
             raise BusinessLogicException(f"Proposed version '{selected_version}' has invalid data: {exc}") from exc
 
-        # TaskRepository directly, NOT TaskService.create_task(): the latter
-        # always runs its own AI planning pass for root tasks (task/service.py
-        # create_task -> _ai_plan_subtasks), which could split this task into
-        # further sub-tasks the enterprise never confirmed. This conversation
-        # has already scoped exactly one task version — create it as-is.
-        created_task = self.task_repo.create_task(task_create.model_dump())
+        # skip_ai_planning=True above means this goes through the normal
+        # TaskService.create_task() without triggering its AI planning pass
+        # (task/service.py's _ai_plan_subtasks) — this conversation has already
+        # scoped exactly one task version, so it must be created as-is, not
+        # further split by a second, uncoordinated AI call.
+        created_task = self.task_service.create_task(task_create)
 
         ai_message = f"Đã tạo task '{created_task.title}' (phiên bản {selected_version}), mã #{created_task.id}."
         self.repo.add_message(conversation_id, MessageRole.AI, ai_message)

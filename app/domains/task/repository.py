@@ -3,7 +3,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from .models import (
     Company, Task, TaskInput, TaskOutput, TaskEvaluationCriterion,
-    TaskSubmission, TaskSubmissionScore,
+    TaskSubmission, TaskSubmissionScore, TaskReview, TaskSubmissionFile,
 )
 
 class TaskRepository:
@@ -47,14 +47,22 @@ class TaskRepository:
     def get_task_by_title(self, title: str) -> Optional[Task]:
         return self.db.query(Task).filter(Task.title == title).first()
 
-    def list_tasks(self, difficulty: Optional[str] = None, company_id: Optional[int] = None, root_only: bool = True) -> List[Task]:
+    def list_tasks(
+        self,
+        complexity_level: Optional[str] = None,
+        company_id: Optional[int] = None,
+        root_only: bool = True,
+        review_status: Optional[str] = None,
+    ) -> List[Task]:
         query = self.db.query(Task)
         if root_only:
             query = query.filter(Task.parent_task_id.is_(None))
-        if difficulty:
-            query = query.filter(Task.difficulty == difficulty)
+        if complexity_level:
+            query = query.filter(Task.complexity_level == complexity_level)
         if company_id:
             query = query.filter(Task.company_id == company_id)
+        if review_status:
+            query = query.filter(Task.review_status == review_status)
         return query.all()
 
     def get_sub_tasks(self, parent_task_id: int) -> List[Task]:
@@ -74,6 +82,23 @@ class TaskRepository:
         self.db.commit()
         self.db.refresh(task)
         return task
+
+    # ---- Task review ----
+
+    def create_task_review(self, task_id: int, data: dict) -> TaskReview:
+        review = TaskReview(task_id=task_id, **data)
+        self.db.add(review)
+        self.db.commit()
+        self.db.refresh(review)
+        return review
+
+    def list_task_reviews(self, task_id: int) -> List[TaskReview]:
+        return (
+            self.db.query(TaskReview)
+            .filter(TaskReview.task_id == task_id)
+            .order_by(TaskReview.created_at.desc())
+            .all()
+        )
 
     # ---- Submission ----
 
@@ -142,3 +167,23 @@ class TaskRepository:
 
     def get_scores_for_submission(self, submission_id: int) -> List[TaskSubmissionScore]:
         return self.db.query(TaskSubmissionScore).filter(TaskSubmissionScore.submission_id == submission_id).all()
+
+    # ---- Submission files ----
+
+    def count_submission_files(self, submission_id: int) -> int:
+        return self.db.query(TaskSubmissionFile).filter(TaskSubmissionFile.submission_id == submission_id).count()
+
+    def create_submission_file(self, submission_id: int, data: dict) -> TaskSubmissionFile:
+        file = TaskSubmissionFile(submission_id=submission_id, **data)
+        self.db.add(file)
+        self.db.commit()
+        self.db.refresh(file)
+        return file
+
+    def list_submission_files(self, submission_id: int) -> List[TaskSubmissionFile]:
+        return (
+            self.db.query(TaskSubmissionFile)
+            .filter(TaskSubmissionFile.submission_id == submission_id)
+            .order_by(TaskSubmissionFile.uploaded_at.asc())
+            .all()
+        )

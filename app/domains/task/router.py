@@ -9,7 +9,8 @@ from .schemas import (
     JoinTaskRequest, SubmitReportRequest, MentorReviewRequest,
     CompleteSubmissionRequest, ScoreCriterionRequest,
     TaskSubmissionRead, TaskSubmissionScoreRead, TaskProgressRead,
-    TaskDifficulty,
+    TaskComplexity, TaskReviewRequest, TaskReviewRead, TaskReviewStatus,
+    RegisterSubmissionFileRequest, TaskSubmissionFileRead,
 )
 from .service import TaskService
 
@@ -29,11 +30,11 @@ def create_task(task: TaskCreate, db: Session = Depends(get_db)):
 
 @router.get("/", response_model=List[TaskRead], summary="List root tasks, optionally filtered")
 def list_tasks(
-    difficulty: Optional[TaskDifficulty] = None,
+    complexity_level: Optional[TaskComplexity] = None,
     company_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
-    return TaskService(db).list_tasks(difficulty=difficulty.value if difficulty else None, company_id=company_id)
+    return TaskService(db).list_tasks(complexity_level=complexity_level.value if complexity_level else None, company_id=company_id)
 
 @router.get(
     "/submissions",
@@ -53,9 +54,39 @@ def list_submissions(
 # in the path template) would otherwise swallow the literal "/submissions"
 # path too — the type-mismatch 422 happens only after routing already picked
 # this route, so it never falls through to the real one below it.
+@router.get(
+    "/pending-approval",
+    response_model=List[TaskRead],
+    summary="List root tasks awaiting (or needing more info for) mentor approval",
+)
+def list_pending_approval_tasks(company_id: Optional[int] = None, db: Session = Depends(get_db)):
+    return TaskService(db).list_tasks(company_id=company_id, review_status=TaskReviewStatus.PENDING_MENTOR_APPROVAL.value)
+
 @router.get("/{task_id}", response_model=TaskRead, summary="Get a task's detail, including its sub-tasks")
 def get_task(task_id: int, db: Session = Depends(get_db)):
     return TaskService(db).get_task(task_id)
+
+@router.post(
+    "/{task_id}/review",
+    response_model=TaskReviewRead,
+    summary="Mentor approves, rejects, or requests more info on a Task itself",
+    description="Distinct from mentor-review of a submission: this gates whether students can join the task at all. "
+                "APPROVED is rejected by the server if the (possibly overridden) risk_level is R2/R3.",
+)
+def review_task(task_id: int, request: TaskReviewRequest, db: Session = Depends(get_db)):
+    return TaskService(db).review_task(
+        task_id,
+        request.reviewer_id,
+        request.decision,
+        request.approved_complexity,
+        request.approved_risk,
+        request.approved_evidence_level,
+        request.comment,
+    )
+
+@router.get("/{task_id}/reviews", response_model=List[TaskReviewRead], summary="List the review history for a task")
+def list_task_reviews(task_id: int, db: Session = Depends(get_db)):
+    return TaskService(db).list_task_reviews(task_id)
 
 @router.post(
     "/{task_id}/join",
@@ -81,7 +112,22 @@ def get_task_progress(task_id: int, student_id: int, db: Session = Depends(get_d
                 "the student only knows which task they joined.",
 )
 def submit_report(task_id: int, request: SubmitReportRequest, db: Session = Depends(get_db)):
-    return TaskService(db).submit_report(task_id, request.student_id, request.report_url)
+    reflection = request.student_reflection.model_dump() if request.student_reflection else None
+    return TaskService(db).submit_report(task_id, request.student_id, request.report_url, reflection)
+
+@router.post(
+    "/submissions/{submission_id}/files",
+    response_model=TaskSubmissionFileRead,
+    summary="Register metadata for one uploaded deliverable file",
+    description="The binary itself is uploaded through the caller's own storage pipeline; this only records what "
+                "was uploaded. Max 10 files/submission (requirements.md §14); size_bytes is capped at 50MB/file.",
+)
+def register_submission_file(submission_id: int, request: RegisterSubmissionFileRequest, db: Session = Depends(get_db)):
+    return TaskService(db).register_submission_file(submission_id, request.model_dump())
+
+@router.get("/submissions/{submission_id}/files", response_model=List[TaskSubmissionFileRead], summary="List a submission's uploaded files")
+def list_submission_files(submission_id: int, db: Session = Depends(get_db)):
+    return TaskService(db).list_submission_files(submission_id)
 
 @router.post("/submissions/{submission_id}/auto-check", response_model=TaskSubmissionRead, summary="Run the automated format/completeness check")
 def run_auto_check(submission_id: int, db: Session = Depends(get_db)):

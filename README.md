@@ -1,44 +1,58 @@
-# Career Guidance System
+# WORKLAB / Career Guidance Backend
 
-Backend cho hệ thống định hướng nghề nghiệp: phân tích tín hiệu kỹ năng từ dữ liệu tuyển dụng thực tế (lương, xu hướng theo vùng miền, thay đổi theo thời gian), xây dựng hồ sơ năng lực học sinh/sinh viên qua tương tác, và đề xuất lộ trình học tập/nghề nghiệp cá nhân hóa, có thể giải thích, chống thiên kiến giới/vùng miền.
+Backend cho nền tảng kết nối doanh nghiệp — giáo viên/mentor — sinh viên qua các nhiệm vụ nghề nghiệp thực tế: phân tích tín hiệu kỹ năng từ dữ liệu tuyển dụng thực tế, xây dựng hồ sơ năng lực sinh viên qua tương tác và task thực hành, và đề xuất lộ trình học tập/nghề nghiệp cá nhân hóa, có thể giải thích, chống thiên kiến giới/vùng miền.
 
-Chi tiết kiến trúc, design pattern, và roadmap từng sprint xem tại [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+**Docs:**
+- [requirements.md](docs/requirements.md) — spec sản phẩm đầy đủ (source of truth cho business rules)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — kiến trúc, design pattern, bản đồ domain, quyết định không-có-auth
+- [docs/DATA_MODEL.md](docs/DATA_MODEL.md) — entity của `task`/`evidence`/`eportfolio`
+- [docs/MARKET_DATA_MODEL.md](docs/MARKET_DATA_MODEL.md) — entity của `market` (Career/Job/JobPosting)
+- [docs/TESTING.md](docs/TESTING.md) — hướng dẫn chạy, test, tích hợp end-to-end toàn bộ domain
 
 ## Trạng thái hiện tại
 
-| Domain | Models | Router (API) | Ghi chú |
-| :--- | :--- | :--- | :--- |
-| `market` (Dev 1) | ✅ | ✅ đã mount vào `main.py` | Ingestion, skill demand, skill trend, auto-update `market_trend` |
-| `student` (Dev 2) | ✅ | ✅ đã mount vào `main.py` | Student CRUD, profile, skill-profile/skill-event, career-skill-requirement, và rule-based career-recommendation engine (merge từ `backendstudent`) |
-| `guidance` (Dev 3) | ✅ | ✅ đã mount vào `main.py` | Recommendation engine + `AntiBiasEngine` (Strategy Pattern) |
-| `chatbot` | — (stateless) | ✅ đã mount vào `main.py` | Proxy tới FPT Cloud chat-completions API; không có bảng DB |
-| `task` | ✅ | ✅ đã mount vào `main.py` | Company-sponsored task marketplace, hỗ trợ sub-task, workflow nộp/duyệt/chấm điểm đầy đủ trạng thái |
+| Domain | Vai trò | Ghi chú |
+|---|---|---|
+| `market` | Skill/Career/Job/JobPosting catalog, market trend, dashboard overview | Ingestion, skill demand/trend, dashboard `/market/overview` |
+| `student` | Student profile, skill leveling, career recommendation | `StudentSkillProfile`/`StudentSkillEvent`, rule-based recommendation |
+| `guidance` | EducationPath + Recommendation | `AntiBiasEngine` (Strategy Pattern) — diversity + region expansion |
+| `chatbot` | Proxy LLM chat-completions | Stateless, không có bảng DB |
+| `task` | Task marketplace: company task, sub-task, review (T/R-level), submission workflow | Đầy đủ state machine + `TaskReview` (approve/reject task trước khi student join được) |
+| `task_builder` | AI Task Builder — brief doanh nghiệp → Task có cấu trúc | Hội thoại nhiều lượt, tạo Task qua `TaskService.create_task(skip_ai_planning=True)` |
+| `evidence` | EvidenceClaim: AI draft → student review → mentor verify | Chỉ `VERIFIED` mới cập nhật `StudentSkillProfile` |
+| `eportfolio` | Tổng hợp view student/business + share consent | Không cache — tổng hợp real-time mỗi lần gọi |
 
-`guidance` đọc/ghi student qua `StudentRepository` có sẵn; `market` sở hữu catalog `Skill`/`Career` dùng chung (kể cả cho career-recommendation của `student`).
+Mọi domain đã mount vào `main.py`. Schema version hóa bằng Alembic (`app/alembic/`), có fallback `AUTO_CREATE_SCHEMA` cho dev/demo — xem [docs/ARCHITECTURE.md §4](docs/ARCHITECTURE.md#4-schema--migration-alembic).
 
-## Kiến trúc
+**Không có Auth/RBAC** — quyết định có chủ đích để đơn giản hóa test/demo, xem [docs/ARCHITECTURE.md §3](docs/ARCHITECTURE.md#3-không-có-authrbac--quyết-định-có-chủ-đích).
 
-Domain-Driven Design + Layered Architecture (Router → Service → Repository → Model), mỗi domain nằm độc lập dưới `app/domains/`:
+## Kiến trúc (tóm tắt)
+
+Domain-Driven Design + Layered Architecture (Router → Service → Repository → Model), mỗi domain độc lập dưới `app/domains/`. Chi tiết đầy đủ ở [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```
 app/
-├── main.py              # Entry point: khởi tạo FastAPI, include_router, tạo bảng
-├── core/                # config (Pydantic Settings), database (engine/session/Base), security (JWT), exceptions
+├── main.py              # Entry point: FastAPI init, include_router mọi domain, AUTO_CREATE_SCHEMA
+├── core/                 # config (Pydantic Settings), database (engine/session/Base), security, exceptions
+├── alembic/               # Migration versioned (alembic.ini ở app/alembic.ini)
 ├── domains/
-│   ├── market/          # Dev 1 — Skill, Career, JobPosting, JobSkill, CareerSkill
-│   ├── student/         # Dev 2 — Student, InteractionLog, StudentSkill, StudentProfile, StudentSkillProfile/Event, CareerSkillRequirement, StudentCareerRecommendation
-│   ├── guidance/        # Dev 3 — EducationPath, Recommendation
-│   ├── chatbot/         # Stateless proxy to an external LLM chat API (no models.py)
-│   └── task/            # Company, Task (self-referential sub-task), TaskSubmission, TaskSubmissionScore
-└── tests/                # unit/ + integration/ (scaffold, chưa có test)
+│   ├── market/           # Skill, Career, Job, JobPosting
+│   ├── student/          # Student, StudentProfile, StudentSkillProfile/Event
+│   ├── guidance/         # EducationPath, Recommendation
+│   ├── chatbot/          # Stateless proxy tới LLM chat API
+│   ├── task/             # Company, Task, TaskReview, TaskSubmission, TaskSubmissionFile
+│   ├── task_builder/     # AI Task Builder
+│   ├── evidence/         # EvidenceClaim
+│   └── eportfolio/       # Aggregation view + share consent
+└── tests/unit/            # Pure-logic test, không cần DB thật
 ```
 
-**Lưu ý quan trọng**: mọi import trong domain đều là absolute, không có prefix `app.` (ví dụ `from core.database import Base`). Vì vậy `app/` phải là working directory khi chạy server — xem hướng dẫn chạy bên dưới.
+**Lưu ý quan trọng**: mọi import trong domain đều là absolute, không có prefix `app.` (ví dụ `from core.database import Base`). Vì vậy `app/` phải là working directory khi chạy server/alembic/pytest.
 
 ## Yêu cầu môi trường
 
 - Python ≥ 3.11
-- [uv](https://docs.astral.sh/uv/) để quản lý dependency (thay cho pip/requirements.txt)
+- [uv](https://docs.astral.sh/uv/) để quản lý dependency
 - PostgreSQL (đang dùng Neon serverless Postgres cho môi trường dev/demo)
 
 ## Cài đặt
@@ -53,7 +67,7 @@ uv sync
 
 ### Cấu hình biến môi trường
 
-Copy file mẫu và điền giá trị thật — **file `.env` phải nằm trong `app/`**, không phải ở repo root (vì server chạy với cwd = `app/`):
+Copy file mẫu và điền giá trị thật — **file `.env` phải nằm trong `app/`**, không phải ở repo root:
 
 ```bash
 cp app/.env.example app/.env
@@ -65,7 +79,15 @@ Sửa `app/.env`:
 DATABASE_URL="postgresql://user:password@host:5432/dbname?sslmode=require"
 ```
 
-`DATABASE_URL` là bắt buộc (không có giá trị mặc định). Các biến khác (`PROJECT_NAME`, `VERSION`, `ENABLE_SEED_ENDPOINT`, `FPT_CLOUD_API_KEY`, `FPT_CLOUD_BASE_URL`, `FPT_CLOUD_CHAT_MODEL`) đã có default trong `app/core/config.py`, chỉ cần override khi cần. `FPT_CLOUD_API_KEY` để trống thì phần còn lại của app vẫn chạy bình thường — chỉ `/assistant/chat` trả 503 và `/assistant/health` báo `configured: false`.
+`DATABASE_URL` là bắt buộc (không có default). Các biến khác đã có default hợp lý trong `app/core/config.py`:
+
+| Biến | Default | Ghi chú |
+|---|---|---|
+| `ENABLE_SEED_ENDPOINT` | `true` | Bật `POST .../seed-demo-data` ở mọi domain — set `false` ở production |
+| `AUTO_CREATE_SCHEMA` | `true` | Tự tạo bảng còn thiếu lúc startup (dev/demo convenience) — set `false` ở production, dùng `alembic upgrade head` |
+| `FPT_CLOUD_API_KEY` | (trống) | Để trống thì app vẫn chạy, chỉ endpoint AI trả `503` |
+| `VERTEX_PROJECT_ID` | (trống, auto-detect) | Vertex AI được ưu tiên hơn FPT Cloud khi ADC khả dụng |
+| `TASK_BUILDER_GCS_BUCKET` | (trống) | Cần cho upload tài liệu ở `task_builder`; bỏ trống thì endpoint đó trả `503` |
 
 ## Chạy server (local dev)
 
@@ -74,122 +96,37 @@ cd app
 uv run --project .. uvicorn main:app --reload --port 8000
 ```
 
-- `cd app` trước vì import trong code giả định `app/` là root (`core.database`, `domains.market...`).
+- `cd app` trước vì import trong code giả định `app/` là root.
 - `--project ..` trỏ `uv` về `pyproject.toml`/`uv.lock` ở repo root.
-- `--reload` để auto-restart khi sửa code (chỉ dùng cho dev, bỏ khi chạy production).
+- Lần chạy đầu tiên, `AUTO_CREATE_SCHEMA=true` tự tạo toàn bộ bảng (mọi domain) trên DB chỉ định ở `DATABASE_URL` — không cần chạy migration tay.
 
-Lần chạy đầu tiên, `Base.metadata.create_all()` trong `main.py` sẽ tự tạo toàn bộ bảng (kể cả của `student`/`guidance`) trên database chỉ định trong `DATABASE_URL`.
-
-## Seed dữ liệu mẫu
-
-```
-POST /market/seed-demo-data
-```
-
-Tạo sẵn 10 skill, 5 career (Backend/Frontend/Data Scientist/DevOps/Business Analyst) và 35 job posting trải trên 5 thành phố (Hồ Chí Minh, Hà Nội, Đà Nẵng, Cần Thơ) với `posted_at` rải trong 60 ngày gần đây, rồi tự trigger `update_market_trends` ngay lập tức — gọi xong là có đủ dữ liệu để thấy `RISING`/`DECLINING`/`STABLE` thật trên `GET /market/careers/` và chênh lệch nhu cầu kỹ năng theo vùng (ví dụ Đà Nẵng gần như không có tin nào cần Docker/Kubernetes/AWS/Machine Learning — mô phỏng "thiếu hụt kỹ năng tại địa phương").
-
-- Idempotent với skill/career (match theo tên, gọi lại không tạo trùng); job posting thì được thêm mới mỗi lần gọi.
-- Bị tắt khi biến môi trường `ENABLE_SEED_ENDPOINT=false` — **luôn set false khi deploy production**, vì đây là endpoint không có auth, có thể bị lạm dụng để ghi rác vào DB nếu để public.
-
-## Chatbot AI
-
-Proxy tới FPT Cloud Marketplace chat-completions API (OpenAI-compatible). Không lưu hội thoại vào DB — client tự giữ `history` và gửi lại mỗi lần gọi.
-
-```
-POST /assistant/chat
-{
-  "message": "Em thích vẽ và làm việc với máy tính, nên học ngành gì?",
-  "history": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
-}
-```
-→ `{"reply": "...", "model": "gemma-4-31B-it"}`
-
-System prompt cố định server-side (không nhận từ client) để không ai override hành vi/guardrail của assistant qua request body.
-
-```
-GET /assistant/health          # chỉ kiểm tra FPT_CLOUD_API_KEY có được set không — nhanh, miễn phí
-GET /assistant/health?deep=true  # gọi thật lên FPT Cloud (1 request tối thiểu) để xác nhận kết nối — tốn quota/độ trễ, không nên dùng cho health probe tần suất cao
-```
-
-## AI Guidance (đề xuất lộ trình học tập)
-
-Kết hợp hồ sơ học sinh (Dev 2), xu hướng thị trường (Dev 1), và một catalog `EducationPath` đã có sẵn, để LLM chọn ra lộ trình phù hợp kèm giải thích — rồi chạy qua `AntiBiasEngine` trước khi lưu.
-
-```
-POST /guidance/seed-demo-data     # 6 education path (đủ 3 loại hình, có cả remote) + 1 demo student (Cần Thơ)
-POST /guidance/education-paths/   # tự thêm path khác nếu muốn
-GET  /guidance/education-paths/
-
-POST /guidance/students/{student_id}/recommendations?count=3
-GET  /guidance/students/{student_id}/recommendations
-```
-
-Pipeline của `POST .../recommendations`:
-1. Lấy `Student.ai_inferred_profile` + `current_location` (Dev 2) và toàn bộ `Career.market_trend` hiện có (Dev 1).
-2. Gọi LLM (dùng chung `ChatbotService.complete()` với domain `chatbot`, nhưng system prompt khác hẳn — yêu cầu chọn đúng từ catalog theo `path_id`, trả JSON, không được dựa vào giới tính/quê quán) để sinh `reasoning_explanation` cho từng lựa chọn.
-3. **`AntiBiasEngine`** (Strategy Pattern, `domains/guidance/anti_bias.py`):
-   - `DiversityValidator` — nếu tất cả gợi ý cùng một `PathType` (vd. toàn `UNIVERSITY`), thay 1 slot bằng loại hình khác từ catalog.
-   - `RegionExpansionValidator` — nếu tất cả gợi ý đều gắn với đúng `current_location` của học sinh, thay 1 slot bằng path `location=None` (remote/toàn quốc).
-   - Cả hai đều gắn `reasoning_explanation` riêng giải thích lý do được bổ sung — không âm thầm chèn.
-4. Lưu các recommendation đã qua validate vào DB, trả về kèm `reasoning_explanation`.
-
-Unit test cho đúng case plan yêu cầu ("DiversityValidator converts a University-only list into a mixed list") nằm ở `app/tests/unit/test_anti_bias.py`.
-
-## Task Marketplace (nhiệm vụ thực hành từ doanh nghiệp)
-
-Data model đầy đủ xem tại [TASK_DATA_MODEL.md](TASK_DATA_MODEL.md). Task hỗ trợ **sub-task** — dùng chung bảng `Task`, tự tham chiếu qua `parent_task_id` (tối đa 2 cấp), điểm năng lực của task cha được **cộng dồn** từ các sub-task đã hoàn thành, không lưu tĩnh.
-
-```
-POST /tasks/seed-demo-data   # 1 company + 1 task gốc (không tự có điểm) + 2 sub-task (20đ, 30đ) — tái tạo đúng ví dụ WORKLAB
-POST /tasks/companies/       GET /tasks/companies/
-POST /tasks/                 GET /tasks/                GET /tasks/{task_id}
-```
-
-`difficulty` là **tùy chọn** khi tạo task (root lẫn sub-task) — nếu bỏ trống, service tự gọi chatbot để phân loại `EASY`/`MEDIUM`/`HARD` dựa trên title/context/scope/estimated hours; nếu người dùng đã truyền `difficulty` sẵn thì AI không được ghi đè giá trị đó. Bước gọi AI này là best-effort: nếu chatbot lỗi hoặc trả về không đúng định dạng, task vẫn được tạo bình thường với difficulty mặc định (`MEDIUM`).
-
-Khi tạo một **task gốc** (không truyền `parent_task_id`), `POST /tasks/` còn gọi thêm chatbot để quyết định có nên tách task đó thành các sub-task hay không (dùng chung 1 lần gọi AI với việc đánh giá difficulty ở trên); nếu có, chatbot trả về danh sách sub-task và service tự lưu chúng (kèm `parent_task_id` trỏ về task gốc) rồi đặt `competency_points` của task gốc về `null` (điểm giờ cộng dồn từ sub-task). Việc tạo sub-task/task thủ công qua `parent_task_id` vẫn hoạt động như cũ và không kích hoạt lại bước tách-sub-task này (tránh đệ quy vượt quá 2 cấp) — nhưng vẫn được tự động gán `difficulty` nếu bỏ trống.
-
-Luồng nộp/duyệt cho từng task (áp dụng như nhau cho task gốc lẫn sub-task, vì sub-task chỉ là 1 row `Task` khác):
-
-```
-POST /tasks/{task_id}/join                              {student_id}          → JOINED (idempotent — join lại trả về submission đang có, không tạo bản ghi mới)
-POST /tasks/{task_id}/submit                             {student_id, report_url}  → SUBMITTED (tra theo task_id + student_id, không cần biết submission_id)
-POST /tasks/submissions/{id}/auto-check                                        → AUTO_CHECK_PASSED | AUTO_CHECK_FAILED
-POST /tasks/submissions/{id}/mentor-review               {approved, feedback}  → MENTOR_APPROVED | MENTOR_REJECTED
-POST /tasks/submissions/{id}/scores                      {criterion_id, score_percent, feedback, scored_by}  → upsert điểm theo từng tiêu chí
-POST /tasks/submissions/{id}/complete                    {completed_by: AI|MENTOR}  → COMPLETED, ghi `points_awarded` (snapshot, không đọc lại Task sau này)
-GET  /tasks/submissions/{id}                             GET /tasks/submissions?student_id=...&task_id=...   (bỏ trống cả 2 filter để lấy toàn bộ submission)
-GET  /tasks/{task_id}/progress?student_id=...            → nếu có sub-task: cộng dồn điểm + is_fully_completed; nếu là leaf: trả thẳng trạng thái submission
-```
-
-`complete` chỉ hợp lệ khi đã qua đúng "cổng" mà task yêu cầu (`requires_auto_check`/`requires_mentor_approval`) — gọi sai thứ tự sẽ trả `400` kèm lý do rõ ràng (trạng thái hiện tại vs trạng thái cần có). `AUTO_CHECK_FAILED`/`MENTOR_REJECTED` không phải ngõ cụt — gọi lại `submit` để nộp lại.
-
-Unit test cho rule 2-cấp và logic cộng dồn điểm (không cần DB) nằm ở `app/tests/unit/test_task_service.py`.
-
-## Test Swagger / thử API
+## Test API qua Swagger
 
 Sau khi server chạy ở `http://127.0.0.1:8000`:
 
-- **Swagger UI**: http://127.0.0.1:8000/docs — interactive, có nút "Try it out" gọi thẳng API, nhóm theo tag `Market Data` / `Student Profile` / `AI Guidance` / `AI Chatbot` / `Task Marketplace` / `Dev Tools`.
-- **ReDoc**: http://127.0.0.1:8000/redoc — bản đọc tài liệu tĩnh.
-- **OpenAPI JSON**: http://127.0.0.1:8000/openapi.json — import vào Postman/Insomnia nếu cần.
+- **Swagger UI**: http://127.0.0.1:8000/docs — nhóm theo tag của từng domain, có nút "Try it out".
+- **ReDoc**: http://127.0.0.1:8000/redoc
+- **OpenAPI JSON**: http://127.0.0.1:8000/openapi.json — import vào Postman/Insomnia.
 
-Cách nhanh nhất: gọi `POST /market/seed-demo-data` (mục trên) một lần rồi thử thẳng các endpoint `GET` bên dưới. Hoặc tự tạo dữ liệu thủ công theo luồng sau (qua `/docs`):
-
-1. `POST /market/skills/` — tạo một vài skill (ví dụ "Python", "React").
-2. `POST /market/careers/` — tạo career, truyền `skill_ids` của các skill vừa tạo để nối tín hiệu thị trường vào career này.
-3. `POST /market/jobs/bulk` — nạp một danh sách job posting (có `location`, `salary_min/max`, `skill_ids`, tùy chọn `posted_at` để nạp dữ liệu lịch sử). Endpoint này tự trigger tính lại `market_trend` ở background sau khi ingest.
-4. `GET /market/analytics/skill-demand?location=...` — xem tần suất kỹ năng theo khu vực.
-5. `GET /market/analytics/skill-trend?location=...&window_days=30` — xem tăng/giảm nhu cầu kỹ năng giữa hai khung thời gian liên tiếp.
-6. `GET /market/careers/?trend=RISING` — lọc career theo xu hướng vừa được tính.
+Cách nhanh nhất: gọi `POST /market/seed-demo-data`, `POST /guidance/seed-demo-data`, `POST /tasks/seed-demo-data` rồi thử các endpoint `GET`. Hướng dẫn chi tiết từng luồng (kèm end-to-end tích hợp xuyên domain) ở **[docs/TESTING.md](docs/TESTING.md)**.
 
 ## Chạy test (pytest)
 
 ```bash
-uv run --project .. pytest
+uv run --project .. pytest -q
 ```
 
-`app/tests/unit/test_anti_bias.py` và `app/tests/unit/test_task_service.py` có sẵn; `app/tests/integration` vẫn là scaffold rỗng — sẽ lấp đầy theo Test Plan trong `IMPLEMENTATION_PLAN.md` (integration cho luồng router → service → DB). `pythonpath = ["app"]` đã cấu hình trong `pyproject.toml` nên chạy `pytest` từ đâu cũng import được `core.*`/`domains.*`.
+`pythonpath = ["app"]` đã cấu hình trong `pyproject.toml` nên chạy `pytest` từ đâu cũng import được `core.*`/`domains.*`. Chi tiết từng file test ở [docs/TESTING.md §1](docs/TESTING.md#1-chạy-test-tự-động-pytest-không-cần-dbai-thật).
+
+## Migration (Alembic)
+
+```bash
+cd app
+alembic upgrade head              # áp dụng migration mới nhất
+alembic revision --autogenerate -m "mo ta"   # tạo migration mới sau khi sửa models.py
+```
+
+Xem [docs/TESTING.md §8](docs/TESTING.md#8-alembic--migration) để biết cách xử lý một DB đã có sẵn schema từ `create_all()` cũ (`alembic stamp head`).
 
 ## Docker / Deploy lên Cloud Run
 
@@ -198,9 +135,10 @@ docker build -t career-guidance .
 docker run -p 8080:8080 -e DATABASE_URL="postgresql://..." career-guidance
 ```
 
-- Image build bằng `uv sync --frozen --no-dev` từ `uv.lock` — không dùng `pip`/`requirements.txt`.
-- `.env` **không** được copy vào image (loại trừ qua `.dockerignore`). Trên Cloud Run, truyền secret qua `--set-env-vars` hoặc (khuyến nghị) `--set-secrets` bằng Secret Manager, không dùng file `.env`.
-- Container lắng nghe theo biến `$PORT` mà Cloud Run tiêm vào lúc runtime (mặc định 8080).
+- Image build bằng `uv sync --frozen --no-dev` — không dùng `pip`/`requirements.txt`.
+- `.env` **không** được copy vào image (loại trừ qua `.dockerignore`). Trên Cloud Run, dùng `--set-secrets` (Secret Manager), không dùng file `.env`.
+- Container lắng nghe biến `$PORT` Cloud Run tiêm vào lúc runtime.
+- **Set `ENABLE_SEED_ENDPOINT=false` và `AUTO_CREATE_SCHEMA=false` khi deploy production.**
 
 ```bash
 gcloud run deploy career-guidance \
@@ -212,4 +150,4 @@ gcloud run deploy career-guidance \
 
 ## Ràng buộc đạo đức (bắt buộc với domain `guidance`)
 
-Khi triển khai Sprint 3 cho `domains/guidance`: mọi đề xuất phải mở rộng lựa chọn thay vì đóng khung người dùng, không củng cố định kiến giới/vùng miền, và phải kèm `reasoning_explanation` để học sinh/sinh viên tự quyết định dựa trên tham khảo — không phải chỉ định. Xem `AntiBiasEngine` (Strategy Pattern) trong mục 2 và 4 của `IMPLEMENTATION_PLAN.md`.
+Mọi đề xuất phải mở rộng lựa chọn thay vì đóng khung người dùng, không củng cố định kiến giới/vùng miền, và phải kèm `reasoning_explanation` để học sinh/sinh viên tự quyết định dựa trên tham khảo — không phải chỉ định. Xem `AntiBiasEngine` (Strategy Pattern) trong [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-ràng-buộc-đạo-đức-bắt-buộc-với-domain-guidance).

@@ -37,13 +37,15 @@ class ChatbotService:
         messages.append({"role": "user", "content": message})
         return self.complete(messages)
 
-    def complete(self, messages: List[dict]) -> str:
+    def complete(self, messages: List[dict], json_mode: bool = False) -> str:
         """Single-turn (or pre-built multi-turn) completion for callers that need
         a different persona/task than the general assistant in chat() — e.g. the
         guidance domain's recommendation engine, which needs structured JSON back
         rather than a conversational reply. Takes raw OpenAI-style message dicts
-        so callers control the system prompt directly."""
-        return self._provider.complete(messages)
+        so callers control the system prompt directly. json_mode=True constrains
+        the reply to a JSON object at the provider/API level (see providers.py) —
+        set it whenever the caller is going to json.loads() the result."""
+        return self._provider.complete(messages, json_mode=json_mode)
 
     def check_health(self, deep: bool = False) -> Tuple[bool, Optional[bool]]:
         return self._provider.check_health(deep=deep)

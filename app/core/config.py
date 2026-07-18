@@ -10,6 +10,15 @@ class Settings(BaseSettings):
     # Set to false via env var in production deployments.
     ENABLE_SEED_ENDPOINT: bool = True
 
+    # Dev/demo convenience: auto-create any missing tables at startup via
+    # Base.metadata.create_all() so a fresh local/demo DB works without first
+    # running `alembic upgrade head` by hand. Schema changes are still owned
+    # by Alembic (app/alembic/) — this is purely additive and a no-op once
+    # every table already exists, so it never substitutes for writing a real
+    # migration. Set to false in any shared/production deployment, where
+    # `alembic upgrade head` should be the only thing allowed to change schema.
+    AUTO_CREATE_SCHEMA: bool = True
+
     # FPT Cloud Marketplace chat-completions API (OpenAI-compatible), used by
     # domains/chatbot. Optional (unlike DATABASE_URL): the rest of the app must
     # keep working even if the chatbot isn't configured yet in this environment.

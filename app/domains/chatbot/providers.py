@@ -23,9 +23,13 @@ class AIProvider(ABC):
     model: str
 
     @abstractmethod
-    def complete(self, messages: List[dict]) -> str:
+    def complete(self, messages: List[dict], json_mode: bool = False) -> str:
         """messages is a list of OpenAI-style {"role", "content"} dicts
-        (system/user/assistant); returns the reply text."""
+        (system/user/assistant); returns the reply text. json_mode=True asks
+        the provider to constrain output to a JSON object at the API level —
+        for callers that parse the reply as JSON, this is far more reliable
+        than a prompt instruction alone (models occasionally ignore "reply
+        with ONLY JSON", especially on sensitive-sounding input)."""
 
     @abstractmethod
     def check_health(self, deep: bool = False) -> Tuple[bool, Optional[bool]]: ...
@@ -49,7 +53,7 @@ class FPTCloudProvider(AIProvider):
             "Authorization": f"Bearer {settings.FPT_CLOUD_API_KEY}",
         }
 
-    def complete(self, messages: List[dict]) -> str:
+    def complete(self, messages: List[dict], json_mode: bool = False) -> str:
         if not settings.FPT_CLOUD_API_KEY:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -63,6 +67,11 @@ class FPTCloudProvider(AIProvider):
             # route, which can't consume a server-sent-event stream.
             "stream": False,
         }
+        if json_mode:
+            # Standard OpenAI-compatible field. Best-effort: not every model
+            # behind this gateway is guaranteed to honor it, which is exactly
+            # why callers still need their own parse-retry/fallback on top.
+            payload["response_format"] = {"type": "json_object"}
 
         try:
             # requests is sync/blocking; callers run this from a sync `def`
@@ -127,7 +136,7 @@ class VertexAIProvider(AIProvider):
         self.model = settings.VERTEX_MODEL
         self._client = genai.Client(vertexai=True, project=project, location=settings.VERTEX_LOCATION)
 
-    def complete(self, messages: List[dict]) -> str:
+    def complete(self, messages: List[dict], json_mode: bool = False) -> str:
         # Gemini takes the system prompt separately from the turn history, and
         # uses "model" rather than "assistant" for the assistant's own turns.
         system_instruction = "\n".join(m["content"] for m in messages if m["role"] == "system")
@@ -141,7 +150,10 @@ class VertexAIProvider(AIProvider):
             response = self._client.models.generate_content(
                 model=self.model,
                 contents=contents,
-                config=types.GenerateContentConfig(system_instruction=system_instruction or None),
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction or None,
+                    response_mime_type="application/json" if json_mode else None,
+                ),
             )
         except Exception as exc:
             raise HTTPException(

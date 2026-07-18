@@ -20,7 +20,7 @@ SEED_COMPANY = {
 # — those live on the sub-tasks, which carry the actual deliverables.
 SEED_ROOT_TASK = {
     "title": "Phan tich Hanh vi Gio hang E-commerce",
-    "difficulty": "MEDIUM",
+    "complexity_level": "T2",
     "estimated_hours_min": 4,
     "estimated_hours_max": 6,
     "competency_points": None,
@@ -52,7 +52,7 @@ SEED_ROOT_TASK = {
 SEED_SUB_TASKS = [
     {
         "title": "Lam sach & kham pha du lieu hanh vi",
-        "difficulty": "EASY",
+        "complexity_level": "T1",
         "estimated_hours_min": 1,
         "estimated_hours_max": 2,
         "competency_points": 20,
@@ -76,7 +76,7 @@ SEED_SUB_TASKS = [
     },
     {
         "title": "Xac dinh Drop-off Point & Xay Dashboard",
-        "difficulty": "MEDIUM",
+        "complexity_level": "T2",
         "estimated_hours_min": 3,
         "estimated_hours_max": 4,
         "competency_points": 30,

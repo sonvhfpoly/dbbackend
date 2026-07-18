@@ -2,18 +2,10 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from enum import Enum
-
-class MarketTrend(str, Enum):
-    RISING = "RISING"
-    STABLE = "STABLE"
-    DECLINING = "DECLINING"
-
-class SeniorityLevel(str, Enum):
-    INTERN = "INTERN"
-    JUNIOR = "JUNIOR"
-    MID = "MID"
-    SENIOR = "SENIOR"
-    MANAGER = "MANAGER"
+# Re-exported (not redefined) so this stays the single source of truth for
+# these values — a second definition here previously risked drifting from
+# the SQLAlchemy column's allowed values without either side erroring.
+from .models import MarketTrend, SeniorityLevel  # noqa: F401
 
 class ConfidenceLevel(str, Enum):
     HIGH = "HIGH"

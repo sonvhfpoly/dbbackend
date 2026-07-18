@@ -5,11 +5,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from core.database import Base
 import enum
 
-class TaskDifficulty(enum.Enum):
-    EASY = "EASY"
-    MEDIUM = "MEDIUM"
-    HARD = "HARD"
-
 class TaskInputType(enum.Enum):
     DATASET = "DATASET"
     DOCUMENT = "DOCUMENT"
@@ -30,6 +25,47 @@ class CompletionActor(enum.Enum):
     AI = "AI"
     MENTOR = "MENTOR"
 
+# Task complexity ("T-level" in the product spec). T4/T5 are intentionally
+# absent: they're out of scope for MVP, so the type system itself blocks them
+# rather than relying on a runtime check.
+class TaskComplexity(enum.Enum):
+    T1 = "T1"
+    T2 = "T2"
+    T3 = "T3"
+
+# Task data-risk ("R-level"). R2/R3 exist here (unlike TaskComplexity's T4/T5)
+# because the spec's rule is a runtime gate — "risk_level >= R2 blocks
+# APPROVED" — not an MVP type-level exclusion; see TaskService.review_task.
+class TaskRiskLevel(enum.Enum):
+    R0 = "R0"
+    R1 = "R1"
+    R2 = "R2"
+    R3 = "R3"
+
+# Target/observed student skill level ("Evidence Level" / Skill Level in the
+# spec). Used both as Task.target_evidence_level and as
+# EvidenceClaim.proposed_skill_level in the evidence domain.
+class EvidenceLevel(enum.Enum):
+    L1 = "L1"
+    L2 = "L2"
+    L3 = "L3"
+    L4 = "L4"
+    L5 = "L5"
+
+# Mentor decision on a Task itself (distinct from TaskSubmission review,
+# which judges a student's work). PENDING_MENTOR_APPROVAL is the initial
+# state; NEED_MORE_INFO loops back to it after the business clarifies.
+class TaskReviewStatus(enum.Enum):
+    PENDING_MENTOR_APPROVAL = "PENDING_MENTOR_APPROVAL"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    NEED_MORE_INFO = "NEED_MORE_INFO"
+
+class FileScanStatus(enum.Enum):
+    PENDING = "PENDING"
+    PASSED = "PASSED"
+    FAILED = "FAILED"
+
 class Company(Base):
     __tablename__ = "companies"
 
@@ -49,7 +85,6 @@ class Task(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(255))
-    difficulty: Mapped[TaskDifficulty] = mapped_column(SQLEnum(TaskDifficulty))
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
     # Null = root/standalone task. Set = this row is a sub-task of another Task.
     # The referenced parent must itself have parent_task_id=None — enforced in
@@ -70,7 +105,23 @@ class Task(Base):
     requires_mentor_approval: Mapped[bool] = mapped_column(default=True)
     mentor_approval_sla_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     data_privacy_notice: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    # Milestones a student is expected to hit while working outside WORKLAB
+    # (requirements.md §7.2's AI Structured Task Output) — display-only, no
+    # backend gate is tied to them (no Work Session/progress tracking in MVP).
+    checkpoints: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+    # T-level / R-level / target skill level as proposed by the business or AI
+    # at creation time; a mentor review (see TaskReview below) can override
+    # complexity_level/risk_level/target_evidence_level with its own values.
+    complexity_level: Mapped[TaskComplexity] = mapped_column(SQLEnum(TaskComplexity), default=TaskComplexity.T1)
+    risk_level: Mapped[TaskRiskLevel] = mapped_column(SQLEnum(TaskRiskLevel), default=TaskRiskLevel.R0)
+    target_evidence_level: Mapped[EvidenceLevel] = mapped_column(SQLEnum(EvidenceLevel), default=EvidenceLevel.L1)
+    # A task can't be joined by a student until this is APPROVED — see
+    # TaskService.review_task / join_task.
+    review_status: Mapped[TaskReviewStatus] = mapped_column(
+        SQLEnum(TaskReviewStatus), default=TaskReviewStatus.PENDING_MENTOR_APPROVAL
+    )
 
     company = relationship("Company")
     # remote_side=[id] tells SQLAlchemy which side of the self-join is the "one"
@@ -79,6 +130,7 @@ class Task(Base):
     inputs = relationship("TaskInput", back_populates="task", cascade="all, delete-orphan")
     outputs = relationship("TaskOutput", back_populates="task", cascade="all, delete-orphan")
     criteria = relationship("TaskEvaluationCriterion", back_populates="task", cascade="all, delete-orphan")
+    reviews = relationship("TaskReview", back_populates="task", cascade="all, delete-orphan")
 
 class TaskInput(Base):
     __tablename__ = "task_inputs"
@@ -116,6 +168,28 @@ class TaskEvaluationCriterion(Base):
 
     task = relationship("Task", back_populates="criteria")
 
+class TaskReview(Base):
+    """One mentor decision on a Task itself — approve/reject/request-more-info
+    before students can join it. A task can be reviewed more than once (e.g.
+    NEED_MORE_INFO -> business updates -> re-review), so this is an append-only
+    history rather than a single row updated in place; Task.review_status
+    always reflects the latest decision."""
+    __tablename__ = "task_reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), index=True)
+    # Not a FK: there's no Mentor/User identity table yet in this MVP, same
+    # convention as TaskSubmission.student_id below.
+    reviewer_id: Mapped[int] = mapped_column(Integer, index=True)
+    decision: Mapped[TaskReviewStatus] = mapped_column(SQLEnum(TaskReviewStatus))
+    approved_complexity: Mapped[Optional[TaskComplexity]] = mapped_column(SQLEnum(TaskComplexity), nullable=True)
+    approved_risk: Mapped[Optional[TaskRiskLevel]] = mapped_column(SQLEnum(TaskRiskLevel), nullable=True)
+    approved_evidence_level: Mapped[Optional[EvidenceLevel]] = mapped_column(SQLEnum(EvidenceLevel), nullable=True)
+    comment: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+    task = relationship("Task", back_populates="reviews")
+
 class TaskSubmission(Base):
     __tablename__ = "task_submissions"
 
@@ -125,9 +199,19 @@ class TaskSubmission(Base):
     # indexed integer the caller supplies, never joined against in this DB.
     student_id: Mapped[int] = mapped_column(Integer, index=True)
     status: Mapped[SubmissionStatus] = mapped_column(SQLEnum(SubmissionStatus), default=SubmissionStatus.JOINED)
+    # joined_at doubles as this MVP's "accepted_at" (requirements.md §12/§13):
+    # there's no separate assign->accept step, joining a task IS accepting it.
     joined_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     report_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     submitted_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    # requirements.md §12: only ever surfaced as a rounded "N days M hours"
+    # duration, never as a raw hours-worked number — see the constraint that
+    # elapsed time must not be used as a Skill Signal.
+    elapsed_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # requirements.md §15 student_reflection: {challenge, ai_usage,
+    # changes_after_feedback, remaining_uncertainty[]} — free-form JSON since
+    # the exact question set is configurable per the spec, not fixed here.
+    student_reflection: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     auto_check_result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     mentor_feedback: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
     mentor_decision_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
@@ -140,6 +224,25 @@ class TaskSubmission(Base):
 
     task = relationship("Task")
     scores = relationship("TaskSubmissionScore", back_populates="submission", cascade="all, delete-orphan")
+    files = relationship("TaskSubmissionFile", back_populates="submission", cascade="all, delete-orphan")
+
+class TaskSubmissionFile(Base):
+    """Metadata for one uploaded deliverable file (requirements.md §14) — the
+    binary itself is stored wherever the caller's upload pipeline puts it
+    (e.g. the same GCS bucket domains/task_builder already uses); this row
+    only tracks what was uploaded and whether it passed the scan."""
+    __tablename__ = "task_submission_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    submission_id: Mapped[int] = mapped_column(ForeignKey("task_submissions.id"), index=True)
+    file_name: Mapped[str] = mapped_column(String(255))
+    mime_type: Mapped[str] = mapped_column(String(255))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    file_url: Mapped[str] = mapped_column(String(1000))
+    scan_status: Mapped[FileScanStatus] = mapped_column(SQLEnum(FileScanStatus), default=FileScanStatus.PENDING)
+    uploaded_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+    submission = relationship("TaskSubmission", back_populates="files")
 
 class TaskSubmissionScore(Base):
     """Actual per-criterion grading for one submission. TaskEvaluationCriterion

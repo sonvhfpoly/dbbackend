@@ -5,43 +5,48 @@ from sqlalchemy.orm import Session
 from core.exceptions import BusinessLogicException, EntityNotFoundException
 from domains.chatbot.service import ChatbotService
 from .repository import TaskRepository
-from .models import SubmissionStatus, CompletionActor, TaskDifficulty, Task
+from .models import SubmissionStatus, CompletionActor, Task, TaskReviewStatus, TaskRiskLevel, TaskComplexity
 from .schemas import CompanyCreate, TaskCreate
+
+# R2/R3 tasks can never be approved in MVP (no Expert Reviewer exists to
+# review them) — see requirements.md section 4.2.
+_BLOCKED_APPROVAL_RISK_LEVELS = {TaskRiskLevel.R2, TaskRiskLevel.R3}
 from .seed_data import SEED_COMPANY, SEED_ROOT_TASK, SEED_SUB_TASKS
 
 # Distinct from the chatbot domain's conversational persona and the guidance
 # domain's recommendation prompt: this one asks the model to act as a task
-# designer, judging difficulty and whether a task is broad enough to warrant
-# splitting into sub-tasks.
+# designer, judging T-level complexity and whether a task is broad enough to
+# warrant splitting into sub-tasks.
 TASK_PLANNING_SYSTEM_PROMPT = (
     "You are a task-design assistant for a student career-guidance platform. "
     "Given a company-sponsored practical task (title, context, scope, estimated hours), "
-    "assess its difficulty and decide whether it should be broken down into sub-tasks "
+    "assess its complexity level and decide whether it should be broken down into sub-tasks "
     "so students can complete it incrementally and earn points progressively. "
     "Only propose a split when the task is genuinely too broad for one submission "
     "(e.g. it spans multiple distinct deliverables, or its estimated hours are much "
     "longer than a single focused session) — small or already well-scoped tasks must NOT "
     "be split. Respond with ONLY a JSON object, no prose, no markdown code fences, in "
-    "exactly this shape: {\"difficulty\": \"EASY\"|\"MEDIUM\"|\"HARD\", "
+    "exactly this shape: {\"complexity_level\": \"T1\"|\"T2\"|\"T3\", "
     "\"should_split\": true|false, \"sub_tasks\": [{\"title\": str, \"context\": str, "
     "\"estimated_hours_min\": int, \"estimated_hours_max\": int, \"competency_points\": int, "
-    "\"difficulty\": \"EASY\"|\"MEDIUM\"|\"HARD\"}]}. sub_tasks must be [] when should_split "
+    "\"complexity_level\": \"T1\"|\"T2\"|\"T3\"}]}. sub_tasks must be [] when should_split "
     "is false. Keep the same language (Vietnamese or English) as the input task."
 )
 
 # Used for sub-tasks (and as a fallback for root tasks if ever needed): a
 # narrower prompt than TASK_PLANNING_SYSTEM_PROMPT since sub-tasks aren't
 # themselves candidates for further splitting.
-DIFFICULTY_ASSESSMENT_SYSTEM_PROMPT = (
-    "You assess the difficulty of a practical task for a student career-guidance platform. "
-    "Given a task's title, context, scope, and estimated hours, classify its difficulty. "
-    "Respond with ONLY a JSON object, no prose, no markdown code fences, in exactly this "
-    "shape: {\"difficulty\": \"EASY\"|\"MEDIUM\"|\"HARD\"}."
+COMPLEXITY_ASSESSMENT_SYSTEM_PROMPT = (
+    "You assess the complexity level (T-level) of a practical task for a student career-guidance "
+    "platform. Given a task's title, context, scope, and estimated hours, classify it as T1 "
+    "(micro-task, clear brief), T2 (task with guidance/checkpoints), or T3 (requires a mentor "
+    "capable of reviewing it). Respond with ONLY a JSON object, no prose, no markdown code "
+    "fences, in exactly this shape: {\"complexity_level\": \"T1\"|\"T2\"|\"T3\"}."
 )
 
-# Used to satisfy the NOT NULL difficulty column while an AI assessment is
-# pending/unavailable — overwritten as soon as the assessment succeeds.
-DEFAULT_DIFFICULTY = TaskDifficulty.MEDIUM
+# Used to satisfy the NOT NULL complexity_level column while an AI assessment
+# is pending/unavailable — overwritten as soon as the assessment succeeds.
+DEFAULT_COMPLEXITY = TaskComplexity.T1
 
 class TaskService:
     def __init__(self, db: Session):
@@ -60,20 +65,25 @@ class TaskService:
 
     def create_task(self, task: TaskCreate):
         data = task.model_dump()
+        skip_ai_planning = data.pop("skip_ai_planning", False)
         self._validate_parent(data.get("parent_task_id"))
         self._validate_criteria_weights(data.get("criteria", []))
 
         is_root = data.get("parent_task_id") is None
-        difficulty_unset = data.get("difficulty") is None
+        complexity_unset = data.get("complexity_level") is None
 
-        if difficulty_unset and not is_root:
+        if complexity_unset and not is_root:
             # Sub-tasks don't go through _ai_plan_subtasks (see below), so if the
-            # caller omitted difficulty here it needs its own AI assessment.
-            data["difficulty"] = self._ai_assess_difficulty(data) or DEFAULT_DIFFICULTY
-        elif difficulty_unset:
+            # caller omitted complexity_level here it needs its own AI assessment
+            # (unless skipped — then it just falls back to the default below).
+            data["complexity_level"] = (
+                None if skip_ai_planning else self._ai_assess_complexity(data)
+            ) or DEFAULT_COMPLEXITY
+        elif complexity_unset:
             # Root task: placeholder to satisfy the NOT NULL column — the AI
-            # planning call below assesses the real difficulty and overwrites it.
-            data["difficulty"] = DEFAULT_DIFFICULTY
+            # planning call below assesses the real complexity_level and overwrites it
+            # (unless skipped, in which case this default is the final value).
+            data["complexity_level"] = DEFAULT_COMPLEXITY
 
         created = self.repo.create_task(data)
 
@@ -81,7 +91,7 @@ class TaskService:
         # granular unit, so it isn't itself a candidate for further splitting
         # (nesting is capped at 2 levels anyway).
         if is_root:
-            self._ai_plan_subtasks(created, override_difficulty=difficulty_unset)
+            self._ai_plan_subtasks(created, override_complexity=complexity_unset, skip=skip_ai_planning)
             created = self.repo.get_task(created.id)
 
         return created
@@ -92,8 +102,14 @@ class TaskService:
             raise EntityNotFoundException("Task", task_id)
         return task
 
-    def list_tasks(self, difficulty: Optional[str] = None, company_id: Optional[int] = None, root_only: bool = True):
-        return self.repo.list_tasks(difficulty=difficulty, company_id=company_id, root_only=root_only)
+    def list_tasks(
+        self,
+        complexity_level: Optional[str] = None,
+        company_id: Optional[int] = None,
+        root_only: bool = True,
+        review_status: Optional[str] = None,
+    ):
+        return self.repo.list_tasks(complexity_level=complexity_level, company_id=company_id, root_only=root_only, review_status=review_status)
 
     def _validate_parent(self, parent_task_id: Optional[int]) -> None:
         if parent_task_id is None:
@@ -113,13 +129,67 @@ class TaskService:
         if total != 100:
             raise BusinessLogicException(f"Evaluation criteria weights must sum to 100, got {total}")
 
-    def _ai_plan_subtasks(self, task: Task, override_difficulty: bool = True) -> None:
-        """Best-effort: ask the chatbot to assess difficulty and, if the task is
-        genuinely too broad for one submission, split it into sub-tasks. Any
-        failure (chatbot unreachable, unparseable reply) is swallowed — AI
+    # ---- Task review (mentor approves/rejects the Task itself) ----
+
+    def review_task(
+        self,
+        task_id: int,
+        reviewer_id: int,
+        decision: TaskReviewStatus,
+        approved_complexity: Optional[str],
+        approved_risk: Optional[str],
+        approved_evidence_level: Optional[str],
+        comment: Optional[str],
+    ):
+        task = self.get_task(task_id)
+        if decision == TaskReviewStatus.PENDING_MENTOR_APPROVAL:
+            raise BusinessLogicException("decision must be APPROVED, REJECTED, or NEED_MORE_INFO")
+        if task.review_status not in {TaskReviewStatus.PENDING_MENTOR_APPROVAL, TaskReviewStatus.NEED_MORE_INFO}:
+            raise BusinessLogicException(
+                f"Task {task_id} review_status is '{task.review_status.value}'; only tasks pending approval or needing more info can be reviewed"
+            )
+
+        effective_risk = TaskRiskLevel(approved_risk) if approved_risk else task.risk_level
+        if decision == TaskReviewStatus.APPROVED and effective_risk in _BLOCKED_APPROVAL_RISK_LEVELS:
+            raise BusinessLogicException(
+                f"Task {task_id} has risk_level {effective_risk.value}; tasks at R2/R3 cannot be approved in MVP (no Expert Reviewer)"
+            )
+
+        review = self.repo.create_task_review(task_id, {
+            "reviewer_id": reviewer_id,
+            "decision": decision,
+            "approved_complexity": approved_complexity,
+            "approved_risk": approved_risk,
+            "approved_evidence_level": approved_evidence_level,
+            "comment": comment,
+        })
+
+        update_fields = {"review_status": decision}
+        if approved_complexity:
+            update_fields["complexity_level"] = approved_complexity
+        if approved_risk:
+            update_fields["risk_level"] = approved_risk
+        if approved_evidence_level:
+            update_fields["target_evidence_level"] = approved_evidence_level
+        self.repo.update_task(task_id, **update_fields)
+
+        return review
+
+    def list_task_reviews(self, task_id: int):
+        self.get_task(task_id)  # 404s if missing
+        return self.repo.list_task_reviews(task_id)
+
+    def _ai_plan_subtasks(self, task: Task, override_complexity: bool = True, skip: bool = False) -> None:
+        """Best-effort: ask the chatbot to assess T-level complexity and, if the
+        task is genuinely too broad for one submission, split it into sub-tasks.
+        Any failure (chatbot unreachable, unparseable reply) is swallowed — AI
         planning is an enhancement on top of task creation, not a requirement
-        for it to succeed. override_difficulty=False means the caller already
-        gave an explicit difficulty, which the AI's opinion must not clobber."""
+        for it to succeed. override_complexity=False means the caller already
+        gave an explicit complexity_level, which the AI's opinion must not
+        clobber. skip=True bypasses the AI call entirely (see TaskCreate.skip_ai_planning) —
+        useful for demos/tests that want a single flat task without an LLM round-trip."""
+        if skip:
+            return
         try:
             raw_reply = self.chatbot.complete([
                 {"role": "system", "content": TASK_PLANNING_SYSTEM_PROMPT},
@@ -129,10 +199,10 @@ class TaskService:
         except Exception:
             return
 
-        if override_difficulty:
-            difficulty = self._coerce_difficulty(plan.get("difficulty"), fallback=None)
-            if difficulty is not None:
-                self.repo.update_task(task.id, difficulty=difficulty)
+        if override_complexity:
+            complexity = self._coerce_complexity(plan.get("complexity_level"), fallback=None)
+            if complexity is not None:
+                self.repo.update_task(task.id, complexity_level=complexity)
 
         sub_tasks = plan.get("sub_tasks")
         if not plan.get("should_split") or not isinstance(sub_tasks, list) or not sub_tasks:
@@ -144,7 +214,7 @@ class TaskService:
             hours_min = sub.get("estimated_hours_min") or 1
             self.repo.create_task({
                 "title": sub["title"],
-                "difficulty": self._coerce_difficulty(sub.get("difficulty"), fallback=task.difficulty),
+                "complexity_level": self._coerce_complexity(sub.get("complexity_level"), fallback=task.complexity_level),
                 "company_id": task.company_id,
                 "parent_task_id": task.id,
                 "sort_order": index,
@@ -158,6 +228,9 @@ class TaskService:
                 "requires_mentor_approval": True,
                 "mentor_approval_sla_hours": None,
                 "data_privacy_notice": None,
+                "checkpoints": [],
+                "risk_level": task.risk_level,
+                "target_evidence_level": task.target_evidence_level,
                 "inputs": [],
                 "outputs": [],
                 "criteria": [],
@@ -167,22 +240,22 @@ class TaskService:
         # (see get_task_progress) — the parent's own static value is stale.
         self.repo.update_task(task.id, competency_points=None)
 
-    def _ai_assess_difficulty(self, data: dict) -> Optional[TaskDifficulty]:
-        """Best-effort difficulty-only assessment for tasks that don't go
+    def _ai_assess_complexity(self, data: dict) -> Optional[TaskComplexity]:
+        """Best-effort complexity-only assessment for tasks that don't go
         through _ai_plan_subtasks (i.e. sub-tasks). Returns None on any
         failure so the caller can fall back to a default."""
         try:
             raw_reply = self.chatbot.complete([
-                {"role": "system", "content": DIFFICULTY_ASSESSMENT_SYSTEM_PROMPT},
-                {"role": "user", "content": self._build_difficulty_prompt(data)},
+                {"role": "system", "content": COMPLEXITY_ASSESSMENT_SYSTEM_PROMPT},
+                {"role": "user", "content": self._build_complexity_prompt(data)},
             ])
             plan = self._parse_planning_output(raw_reply)
         except Exception:
             return None
-        return self._coerce_difficulty(plan.get("difficulty"), fallback=None)
+        return self._coerce_complexity(plan.get("complexity_level"), fallback=None)
 
     @staticmethod
-    def _build_difficulty_prompt(data: dict) -> str:
+    def _build_complexity_prompt(data: dict) -> str:
         return (
             f"Task title: {data.get('title')}\n"
             f"Estimated hours: {data.get('estimated_hours_min')}-{data.get('estimated_hours_max')}\n"
@@ -195,7 +268,7 @@ class TaskService:
     def _build_planning_prompt(task: Task) -> str:
         return (
             f"Task title: {task.title}\n"
-            f"Current difficulty: {task.difficulty.value}\n"
+            f"Current complexity_level: {task.complexity_level.value}\n"
             f"Estimated hours: {task.estimated_hours_min}-{task.estimated_hours_max}\n"
             f"Context: {task.context}\n"
             f"Scope included: {task.scope_included or []}\n"
@@ -217,10 +290,10 @@ class TaskService:
         return data
 
     @staticmethod
-    def _coerce_difficulty(value, fallback: Optional[TaskDifficulty]) -> Optional[TaskDifficulty]:
+    def _coerce_complexity(value, fallback: Optional[TaskComplexity]) -> Optional[TaskComplexity]:
         if isinstance(value, str):
             try:
-                return TaskDifficulty(value)
+                return TaskComplexity(value)
             except ValueError:
                 pass
         return fallback
@@ -231,7 +304,11 @@ class TaskService:
     # AUTO_CHECK_FAILED/MENTOR_REJECTED both loop back to allow a fresh SUBMITTED.
 
     def join_task(self, task_id: int, student_id: int):
-        self.get_task(task_id)  # 404s if missing
+        task = self.get_task(task_id)  # 404s if missing
+        if task.review_status != TaskReviewStatus.APPROVED:
+            raise BusinessLogicException(
+                f"Task {task_id} is not open to students yet (review_status={task.review_status.value})"
+            )
         # Idempotent: re-joining returns the existing submission instead of
         # creating a second, disconnected row for the same (task, student) —
         # otherwise get_latest_submission's ordering would silently orphan
@@ -254,19 +331,47 @@ class TaskService:
                 f"Submission {submission.id} is '{submission.status.value}', expected one of: {allowed_names}"
             )
 
-    def submit_report(self, task_id: int, student_id: int, report_url: str):
+    def submit_report(self, task_id: int, student_id: int, report_url: str, student_reflection: Optional[dict] = None):
         # Scoped by (task_id, student_id): a student only knows which task they
         # joined, not the internal submission_id generated by join_task.
         submission = self.repo.get_latest_submission(task_id, student_id)
         if submission is None:
             raise EntityNotFoundException("TaskSubmission", f"task_id={task_id}, student_id={student_id}")
         self._require_status(submission, {SubmissionStatus.JOINED, SubmissionStatus.AUTO_CHECK_FAILED, SubmissionStatus.MENTOR_REJECTED})
+        submitted_at = datetime.utcnow()
+        # requirements.md §12: joined_at doubles as "accepted_at" in this MVP
+        # (see TaskSubmission.joined_at) — elapsed time is display-only and
+        # must never be treated as a Skill Signal (see TaskSubmissionRead).
+        elapsed_seconds = int((submitted_at - submission.joined_at).total_seconds())
         return self.repo.update_submission(
             submission.id,
             report_url=report_url,
-            submitted_at=datetime.utcnow(),
+            student_reflection=student_reflection,
+            submitted_at=submitted_at,
+            elapsed_seconds=elapsed_seconds,
             status=SubmissionStatus.SUBMITTED,
         )
+
+    # ---- Submission files ----
+    # requirements.md §14: max 50MB/file (enforced by RegisterSubmissionFileRequest's
+    # size_bytes bound) and max 10 files/submission (enforced here).
+
+    MAX_FILES_PER_SUBMISSION = 10
+
+    def register_submission_file(self, submission_id: int, data: dict):
+        self._get_submission_or_404(submission_id)
+        if self.repo.count_submission_files(submission_id) >= self.MAX_FILES_PER_SUBMISSION:
+            raise BusinessLogicException(
+                f"Submission {submission_id} already has the maximum of {self.MAX_FILES_PER_SUBMISSION} files"
+            )
+        # Placeholder scan, same convention as run_auto_check: no real virus
+        # scanner is integrated in this MVP, so registration marks the file
+        # PASSED immediately rather than leaving it stuck at PENDING forever.
+        return self.repo.create_submission_file(submission_id, {**data, "scan_status": "PASSED"})
+
+    def list_submission_files(self, submission_id: int):
+        self._get_submission_or_404(submission_id)
+        return self.repo.list_submission_files(submission_id)
 
     def run_auto_check(self, submission_id: int):
         """Placeholder check for MVP: a real implementation would inspect the
@@ -386,6 +491,9 @@ class TaskService:
             root_data = dict(SEED_ROOT_TASK)
             root_data["company_id"] = company.id
             root_task = self.repo.create_task(root_data)
+            # Demo/local data only: real tasks require an explicit mentor
+            # review (see review_task) before students can join them.
+            root_task = self.repo.update_task(root_task.id, review_status=TaskReviewStatus.APPROVED)
             root_created = True
 
         sub_tasks_created = 0
@@ -395,7 +503,8 @@ class TaskService:
                 sub_data = dict(sub)
                 sub_data["company_id"] = company.id
                 sub_data["parent_task_id"] = root_task.id
-                self.repo.create_task(sub_data)
+                created_sub = self.repo.create_task(sub_data)
+                self.repo.update_task(created_sub.id, review_status=TaskReviewStatus.APPROVED)
                 sub_tasks_created += 1
 
         return {

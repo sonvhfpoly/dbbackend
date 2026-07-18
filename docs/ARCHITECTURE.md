@@ -1,0 +1,80 @@
+# Architecture — WORKLAB / Career Guidance Backend
+
+Kiến trúc, design pattern, và bản đồ domain hiện tại. Xem [requirements.md](requirements.md) cho spec sản phẩm (nguồn sự thật cho business rules), [DATA_MODEL.md](DATA_MODEL.md) cho chi tiết entity của `task`/`evidence`/`eportfolio`, và [TESTING.md](TESTING.md) cho hướng dẫn chạy/test.
+
+## 1. Nguyên tắc thiết kế
+
+**Domain-Driven Design + Layered Architecture** (Router → Service → Repository → Model), mỗi domain nằm độc lập dưới `app/domains/`:
+
+```
+app/
+├── main.py              # Entry point: FastAPI init, include_router mọi domain, import mọi models.py
+├── core/
+│   ├── config.py        # Pydantic Settings — mọi biến môi trường, có default hợp lý cho dev
+│   ├── database.py       # SQLAlchemy engine/session/Base
+│   ├── security.py       # bcrypt password hashing (không có JWT/login flow — xem mục 5)
+│   └── exceptions.py     # BusinessLogicException, EntityNotFoundException, UnauthorizedException
+├── alembic/               # Migration versioned (xem mục 4)
+├── domains/
+│   ├── market/           # Skill, Career, Job, JobPosting — market data & labor trends
+│   ├── student/          # Student, StudentProfile, StudentSkillProfile/Event, CareerRecommendation
+│   ├── guidance/         # EducationPath, Recommendation + AntiBiasEngine
+│   ├── chatbot/          # Stateless proxy tới LLM chat API (không có models.py)
+│   ├── task/             # Company, Task (sub-task), TaskReview, TaskSubmission, TaskSubmissionFile
+│   ├── task_builder/     # AI Task Builder — brief doanh nghiệp → Task có cấu trúc
+│   ├── evidence/         # EvidenceClaim — AI draft → student review → mentor verify
+│   └── eportfolio/       # Aggregation view (student + business) + share consent
+└── tests/unit/            # Pure-logic tests, không cần DB thật (xem TESTING.md)
+```
+
+**Wiring rule**: `main.py` là nơi duy nhất biết về mọi domain. Nó phải `include_router()` router của từng domain và import `models.py` của từng domain (kể cả domain chưa có router) để `Base.metadata` thấy đủ bảng trước khi tạo schema. Một domain tồn tại dưới `domains/` nhưng không được import/đăng ký ở đây là dead code.
+
+**Layer responsibility (SRP)**:
+- **Router**: nhận HTTP request, validate qua Pydantic schema, gọi Service, trả response. Không chứa business logic.
+- **Service**: business logic, state machine transitions, gọi AI client, điều phối giữa các repository (kể cả cross-domain).
+- **Repository**: chỉ truy vấn DB (SQLAlchemy Session), không business logic.
+- **Model**: định nghĩa schema DB (SQLAlchemy `Mapped`/`mapped_column`).
+
+**Design patterns đang dùng**:
+- **Strategy Pattern** (`domains/guidance/anti_bias.py`) — `AntiBiasEngine` chạy list các `BiasValidator` (`DiversityValidator`, `RegionExpansionValidator`), thêm rule mới không sửa code cũ (Open/Closed).
+- **Dependency Injection** — DB session và AI client được inject qua FastAPI `Depends`, giúp test thay repo/chatbot giả (`object.__new__(Service)` rồi gán `.repo`/`.chatbot` — xem TESTING.md).
+- **Enum re-export** — mỗi domain định nghĩa enum **một lần** trong `models.py`; `schemas.py` import lại (`from .models import X  # noqa: F401`) thay vì định nghĩa trùng, tránh 2 nguồn giá trị lệch nhau.
+
+## 2. Bản đồ domain hiện tại
+
+| Domain | Vai trò | Phụ thuộc cross-domain |
+|---|---|---|
+| `market` | Skill/Career/Job/JobPosting catalog, market trend, dashboard overview | — |
+| `student` | Student profile, skill leveling (`StudentSkillProfile`/`StudentSkillEvent`), career recommendation | `market` (Skill/Career catalog) |
+| `guidance` | EducationPath + Recommendation, có anti-bias validation | `student`, `market` |
+| `chatbot` | Proxy LLM chat-completions (FPT Cloud hoặc Vertex AI) | — (được `guidance`/`task`/`task_builder` gọi làm client) |
+| `task` | Task marketplace: company task, sub-task, review (T/R-level), submission workflow | `chatbot` |
+| `task_builder` | AI chat nhiều lượt biến brief doanh nghiệp thành `Task` thật | `task`, `chatbot` |
+| `evidence` | EvidenceClaim state machine, cập nhật `StudentSkillProfile` khi mentor verify | `task` (skill snapshot), `market` (Skill), `student` (skill event) |
+| `eportfolio` | Tổng hợp view cho student/business, share consent | `student`, `evidence`, `task`, `market` |
+
+## 3. Không có Auth/RBAC — quyết định có chủ đích
+
+MVP này **không có** User/Role/Login/JWT. Mọi `student_id`/`mentor_id`/`reviewer_id`/`company_id` là số nguyên do caller truyền thẳng, không xác thực danh tính. Đây là lựa chọn có chủ đích để tối ưu cho demo/test đơn giản (không cần login flow trước mỗi test, đóng vai actor nào chỉ cần đổi 1 param), **không phải thiếu sót cần vá gấp**. `core/security.py` chỉ còn bcrypt password hashing utility, không có JWT issuance.
+
+Nếu sau này cần thêm auth thật, đó là một quyết định mới cần cân nhắc lại toàn bộ Role & Permission Matrix ở [requirements.md §5](requirements.md#5-role--permission-matrix), không phải một việc bật lại "phase đã hoãn".
+
+## 4. Schema & Migration (Alembic)
+
+Schema được version hóa bằng Alembic, nằm ở `app/alembic/` (cấu hình `app/alembic.ini`). `env.py` đọc `DATABASE_URL` từ `core.config.settings` (không hardcode), và import mọi domain's `models.py` để `target_metadata` thấy đủ bảng.
+
+- **Production/staging**: `alembic upgrade head` là cách DUY NHẤT được phép đổi schema.
+- **Dev/demo convenience**: `AUTO_CREATE_SCHEMA=true` (mặc định) — `Base.metadata.create_all()` chạy ở `main.py` lúc startup, tự tạo bảng còn thiếu, không cần chạy `alembic upgrade head` tay trước mỗi lần thử. Đây chỉ additive (không alter/drop), nên không làm schema trôi dạt — set `false` ở môi trường chia sẻ/production.
+
+Xem [TESTING.md § Alembic](TESTING.md#alembic--migration) để biết cách tạo migration mới và cách stamp một DB đã có sẵn schema từ `create_all()` cũ.
+
+## 5. Ghi chú tích hợp cross-domain
+
+- **`task` ↔ `evidence`**: `EvidenceClaim.task_complexity`/`.risk_level` là **snapshot** tại thời điểm tạo claim (không FK-follow sống), để một thay đổi sau này trên `Task` không viết lại ngầm bối cảnh mà evidence đã được tạo ra.
+- **`evidence` → `student`**: khi mentor quyết định `VERIFIED`, `EvidenceService._apply_to_skill_profile` gọi thẳng `StudentProfileService.create_student_skill_event(...)` (không qua HTTP, gọi Python trực tiếp trong cùng process) — đây là **điểm human-in-the-loop duy nhất** cập nhật skill level (xem [requirements.md §29](requirements.md#29-ai-traceability)).
+- **`task_builder` → `task`**: `TaskBuilderService.generate_task` gọi `TaskService.create_task(..., skip_ai_planning=True)` thay vì tạo thẳng qua `TaskRepository` — nghĩa là task sinh ra từ AI Task Builder đi qua đúng 1 pipeline tạo task duy nhất, chỉ tắt bước AI-tự-tách-sub-task (vì task đã được scope 1 phiên bản cụ thể qua hội thoại rồi).
+- **`eportfolio`** không có model nghiệp vụ riêng ngoài `PortfolioShareSetting` — mọi field khác được tổng hợp real-time từ `student`/`evidence`/`task`/`market` mỗi lần gọi, không đồng bộ/cache riêng.
+
+## 6. Ràng buộc đạo đức (bắt buộc với domain `guidance`)
+
+Mọi đề xuất phải mở rộng lựa chọn thay vì đóng khung người dùng, không củng cố định kiến giới/vùng miền, và phải kèm `reasoning_explanation` để học sinh/sinh viên tự quyết định dựa trên tham khảo — không phải chỉ định. Xem `AntiBiasEngine` (Strategy Pattern) trong `domains/guidance/anti_bias.py`.

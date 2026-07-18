@@ -1,17 +1,9 @@
 from datetime import datetime
-from enum import Enum
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
-from domains.task.schemas import TaskDifficulty, TaskRead
-
-class ConversationStatus(str, Enum):
-    COLLECTING = "COLLECTING"
-    READY = "READY"
-    TASK_CREATED = "TASK_CREATED"
-
-class MessageRole(str, Enum):
-    enterprise = "enterprise"
-    ai = "ai"
+from domains.task.schemas import TaskComplexity, TaskRead
+# Re-exported (not redefined) — see market/schemas.py for why.
+from .models import ConversationStatus, MessageRole  # noqa: F401
 
 # ---- Conversation lifecycle ----
 
@@ -27,7 +19,7 @@ class ProposedVersion(BaseModel):
     version_label: str = Field(description="e.g. 'L1', 'L2' — matched against generate-task's selected_version")
     title: str
     context: str
-    difficulty: TaskDifficulty
+    complexity_level: TaskComplexity
     estimated_hours_min: int
     estimated_hours_max: int
     competency_points: int
