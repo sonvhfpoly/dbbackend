@@ -11,8 +11,8 @@ def make_service(repo):
     service.repo = repo
     return service
 
-def make_task(id, review_status=TaskReviewStatus.PENDING_MENTOR_APPROVAL, risk_level=TaskRiskLevel.R0):
-    return SimpleNamespace(id=id, review_status=review_status, risk_level=risk_level)
+def make_task(id, review_status=TaskReviewStatus.PENDING_MENTOR_APPROVAL, risk_level=TaskRiskLevel.R0, parent_task_id=None):
+    return SimpleNamespace(id=id, review_status=review_status, risk_level=risk_level, parent_task_id=parent_task_id)
 
 class FakeReviewRepo:
     def __init__(self, tasks=None):
@@ -37,6 +37,9 @@ class FakeReviewRepo:
 
     def list_task_reviews(self, task_id):
         return [r for r in self.reviews if r.task_id == task_id]
+
+    def get_sub_tasks(self, parent_task_id):
+        return [t for t in self.tasks.values() if t.parent_task_id == parent_task_id]
 
 # ---- risk-level gate: requirements.md 4.2 "IF risk_level >= R2 THEN task cannot transition to APPROVED" ----
 
@@ -114,3 +117,55 @@ def test_join_task_blocked_when_not_approved():
 
     with pytest.raises(BusinessLogicException):
         service.join_task(1, student_id=42)
+
+# ---- root review propagates to sub-tasks (sub-tasks have no review UI of their own) ----
+
+def test_review_task_approval_propagates_to_sub_tasks():
+    root = make_task(id=1)
+    sub1 = make_task(id=2, parent_task_id=1)
+    sub2 = make_task(id=3, parent_task_id=1)
+    repo = FakeReviewRepo(tasks={1: root, 2: sub1, 3: sub2})
+    service = make_service(repo)
+
+    service.review_task(1, reviewer_id=5, decision=TaskReviewStatus.APPROVED,
+                         approved_complexity=None, approved_risk=None,
+                         approved_evidence_level=None, comment=None)
+
+    assert sub1.review_status == TaskReviewStatus.APPROVED
+    assert sub2.review_status == TaskReviewStatus.APPROVED
+
+def test_review_task_rejection_propagates_to_sub_tasks():
+    root = make_task(id=1)
+    sub1 = make_task(id=2, parent_task_id=1)
+    repo = FakeReviewRepo(tasks={1: root, 2: sub1})
+    service = make_service(repo)
+
+    service.review_task(1, reviewer_id=5, decision=TaskReviewStatus.REJECTED,
+                         approved_complexity=None, approved_risk=None,
+                         approved_evidence_level=None, comment=None)
+
+    assert sub1.review_status == TaskReviewStatus.REJECTED
+
+def test_review_task_approval_skips_sub_task_with_blocked_risk():
+    root = make_task(id=1, risk_level=TaskRiskLevel.R0)
+    risky_sub = make_task(id=2, parent_task_id=1, risk_level=TaskRiskLevel.R2)
+    repo = FakeReviewRepo(tasks={1: root, 2: risky_sub})
+    service = make_service(repo)
+
+    service.review_task(1, reviewer_id=5, decision=TaskReviewStatus.APPROVED,
+                         approved_complexity=None, approved_risk=None,
+                         approved_evidence_level=None, comment=None)
+
+    assert risky_sub.review_status == TaskReviewStatus.PENDING_MENTOR_APPROVAL
+
+def test_review_task_does_not_propagate_when_reviewing_a_sub_task_directly():
+    root = make_task(id=1)
+    sub1 = make_task(id=2, parent_task_id=1)
+    repo = FakeReviewRepo(tasks={1: root, 2: sub1})
+    service = make_service(repo)
+
+    service.review_task(2, reviewer_id=5, decision=TaskReviewStatus.APPROVED,
+                         approved_complexity=None, approved_risk=None,
+                         approved_evidence_level=None, comment=None)
+
+    assert root.review_status == TaskReviewStatus.PENDING_MENTOR_APPROVAL
