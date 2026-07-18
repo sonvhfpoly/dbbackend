@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from core.database import Base, engine
 from core.config import settings
 from domains.market.router import router as market_router
@@ -97,6 +100,11 @@ app.include_router(student_router)
 app.include_router(evidence_router)
 app.include_router(eportfolio_router)
 
-@app.get("/")
-def read_root():
-    return {"message": f"Welcome to the {settings.PROJECT_NAME} API"}
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+@app.get("/", include_in_schema=False)
+def worklab_access_hub() -> FileResponse:
+    """Serve the Worklab access hub landing page."""
+    return FileResponse(STATIC_DIR / "worklab-access-hub.html")
