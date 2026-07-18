@@ -150,6 +150,10 @@ def delete_career_skill_requirement(career_id: int, skill_id: int, db: Session =
 @router.post(
     "/students/{student_id}/career-recommendations/generate",
     response_model=list[StudentCareerRecommendationRead],
+    summary="Generate or refresh LLM career recommendations",
+    description="Uses all completed tasks, their curated skills, grading/mentor signals, and the current "
+                "career-skill catalog. With persist=true, replaces stale recommendations and updates an "
+                "existing student/career row instead of appending duplicates.",
 )
 def generate_student_career_recommendations(
     student_id: int,
@@ -162,6 +166,7 @@ def generate_student_career_recommendations(
 @router.get(
     "/students/{student_id}/career-recommendations",
     response_model=list[StudentCareerRecommendationRead],
+    summary="List the student's current career recommendations",
 )
 def list_student_career_recommendations(
     student_id: int,

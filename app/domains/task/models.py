@@ -131,6 +131,19 @@ class Task(Base):
     outputs = relationship("TaskOutput", back_populates="task", cascade="all, delete-orphan")
     criteria = relationship("TaskEvaluationCriterion", back_populates="task", cascade="all, delete-orphan")
     reviews = relationship("TaskReview", back_populates="task", cascade="all, delete-orphan")
+    skills = relationship("Skill", secondary="task_skills")
+
+class TaskSkill(Base):
+    """Curated skills exercised by a task.
+
+    This is deliberately separate from EvidenceClaim: task skills describe
+    what the task exercises, while evidence describes what a reviewer has
+    actually verified for one student's submission.
+    """
+    __tablename__ = "task_skills"
+
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    skill_id: Mapped[int] = mapped_column(ForeignKey("skills.id"), primary_key=True)
 
 class TaskInput(Base):
     __tablename__ = "task_inputs"

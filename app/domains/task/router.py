@@ -11,6 +11,7 @@ from .schemas import (
     TaskSubmissionRead, TaskSubmissionScoreRead, TaskProgressRead,
     TaskComplexity, TaskReviewRequest, TaskReviewRead, TaskReviewStatus,
     RegisterSubmissionFileRequest, TaskSubmissionFileRead,
+    SetTaskSkillsRequest,
 )
 from .service import TaskService
 
@@ -70,6 +71,14 @@ def list_pending_approval_tasks(company_id: Optional[int] = None, db: Session = 
 @router.get("/{task_id}", response_model=TaskRead, summary="Get a task's detail, including its sub-tasks")
 def get_task(task_id: int, db: Session = Depends(get_db)):
     return TaskService(db).get_task(task_id)
+
+@router.put(
+    "/{task_id}/skills",
+    response_model=TaskRead,
+    summary="Replace the skills exercised by a task",
+)
+def set_task_skills(task_id: int, request: SetTaskSkillsRequest, db: Session = Depends(get_db)):
+    return TaskService(db).set_task_skills(task_id, request.skill_ids)
 
 @router.delete(
     "/{task_id}",
