@@ -238,7 +238,23 @@ class TaskService:
             update_fields["target_evidence_level"] = approved_evidence_level
         self.repo.update_task(task_id, **update_fields)
 
+        # Sub-tasks never appear in list_pending_approval_tasks (root_only=True)
+        # and have no review UI of their own, so a mentor only ever reviews the
+        # root. Without this, sub-tasks stay stuck at PENDING_MENTOR_APPROVAL
+        # forever and join_task (which gates per-task) permanently locks them out.
+        if task.parent_task_id is None:
+            self._propagate_review_to_subtasks(task_id, decision)
+
         return review
+
+    def _propagate_review_to_subtasks(self, parent_task_id: int, decision: TaskReviewStatus) -> None:
+        for sub_task in self.repo.get_sub_tasks(parent_task_id):
+            if decision == TaskReviewStatus.APPROVED and sub_task.risk_level in _BLOCKED_APPROVAL_RISK_LEVELS:
+                # Same R2/R3 MVP gate as the root check above, evaluated against
+                # the sub-task's own risk_level — leave it un-approved rather
+                # than silently letting it through via the parent's decision.
+                continue
+            self.repo.update_task(sub_task.id, review_status=decision)
 
     def list_task_reviews(self, task_id: int):
         self.get_task(task_id)  # 404s if missing
