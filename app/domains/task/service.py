@@ -431,6 +431,15 @@ class TaskService:
             submitted_at=submitted_at,
             elapsed_seconds=elapsed_seconds,
             status=SubmissionStatus.SUBMITTED,
+            # Clear the previous review cycle's verdict — a resubmission after
+            # MENTOR_REJECTED/AUTO_CHECK_FAILED is unreviewed work; leaving the
+            # old mentor_feedback/mentor_decision_at/auto_check_result in place
+            # would make this new submission look already-decided even though
+            # nobody has looked at it yet. No-op on a first-time submit (JOINED
+            # -> SUBMITTED), since these are already None at that point.
+            mentor_feedback=None,
+            mentor_decision_at=None,
+            auto_check_result=None,
         )
 
     # ---- Submission files ----

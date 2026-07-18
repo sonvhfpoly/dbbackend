@@ -16,11 +16,16 @@ from .service import TaskService
 
 router = APIRouter(prefix="/tasks", tags=["Task Marketplace"])
 
-@router.post("/companies/", response_model=CompanyRead, summary="Register a company sponsoring tasks")
+@router.post("/companies", response_model=CompanyRead, summary="Register a company sponsoring tasks")
 def create_company(company: CompanyCreate, db: Session = Depends(get_db)):
     return TaskService(db).create_company(company)
 
-@router.get("/companies/", response_model=List[CompanyRead], summary="List companies")
+# No trailing slash — same reasoning as /submissions and /pending-approval
+# below: registered before the generic /{task_id}, but a request that omits
+# the trailing slash (e.g. GET /tasks/companies) wouldn't match a "/companies/"
+# pattern at all and would silently fall through to /{task_id} instead,
+# turning "companies" into a 422 "not a valid integer" on task_id.
+@router.get("/companies", response_model=List[CompanyRead], summary="List companies")
 def list_companies(db: Session = Depends(get_db)):
     return TaskService(db).list_companies()
 

@@ -78,6 +78,25 @@ def test_submit_report_reflection_defaults_to_none():
 
     assert repo.updated["student_reflection"] is None
 
+def test_submit_report_clears_stale_review_state_on_resubmit():
+    """Regression test: resubmitting after MENTOR_REJECTED/AUTO_CHECK_FAILED
+    must clear the previous cycle's mentor_feedback/mentor_decision_at/
+    auto_check_result — otherwise the new (unreviewed) submission looks like
+    it already has a mentor decision from the rejected attempt."""
+    submission = make_submission(1, datetime.utcnow() - timedelta(hours=1), status=SubmissionStatus.MENTOR_REJECTED)
+    submission.mentor_feedback = "Thieu phan ket luan"
+    submission.mentor_decision_at = datetime.utcnow() - timedelta(minutes=30)
+    submission.auto_check_result = {"passed": False, "reason": "report_url missing"}
+    repo = FakeSubmissionRepo(submissions={(1, 42): submission})
+    service = make_service(repo)
+
+    service.submit_report(task_id=1, student_id=42, report_url="https://example.com/r2")
+
+    assert repo.updated["mentor_feedback"] is None
+    assert repo.updated["mentor_decision_at"] is None
+    assert repo.updated["auto_check_result"] is None
+    assert repo.updated["status"] == SubmissionStatus.SUBMITTED
+
 # ---- submission file limits (requirements.md §14: max 10 files/submission) ----
 
 def test_register_submission_file_rejects_when_at_max():

@@ -74,9 +74,9 @@ Bảng con 1-N của `Task` — input tài liệu/dataset, output mong đợi, t
 | submitted_at | datetime, nullable | |
 | **elapsed_seconds** | int, nullable | `submitted_at - joined_at`. **Chỉ hiển thị dạng "N ngày M giờ", không bao giờ dùng làm Skill Signal** ([requirements.md §12](requirements.md#constraint)) |
 | **student_reflection** | JSON, nullable | `{challenge, ai_usage, changes_after_feedback, remaining_uncertainty[]}` ([requirements.md §15](requirements.md#15-submission-requirements)) — form tự do vì bộ câu hỏi "Configurable" theo spec |
-| auto_check_result | JSON, nullable | |
-| mentor_feedback | str, nullable | |
-| mentor_decision_at | datetime, nullable | |
+| auto_check_result | JSON, nullable | bị xóa (`null`) mỗi lần student nộp lại — xem ghi chú resubmit bên dưới |
+| mentor_feedback | str, nullable | bị xóa (`null`) mỗi lần student nộp lại — xem ghi chú resubmit bên dưới |
+| mentor_decision_at | datetime, nullable | bị xóa (`null`) mỗi lần student nộp lại — xem ghi chú resubmit bên dưới |
 | completed_by | enum `CompletionActor` (AI/MENTOR), nullable | |
 | points_awarded | int, nullable | **snapshot** `Task.competency_points` tại thời điểm hoàn thành |
 | completed_at | datetime, nullable | |
@@ -89,6 +89,8 @@ JOINED → SUBMITTED → AUTO_CHECK_PASSED ─┐
                                           └→ MENTOR_REJECTED  (quay lại SUBMITTED)
 ```
 Nếu `Task.requires_mentor_approval=false`, có thể đi thẳng `AUTO_CHECK_PASSED → COMPLETED` với `completed_by=AI`.
+
+> **Về resubmit sau `MENTOR_REJECTED`/`AUTO_CHECK_FAILED`**: `TaskService.submit_report` cho phép nộp lại (đúng theo `requirements.md`'s Revision Flow, được gộp đơn giản vào lại `MENTOR_REJECTED`/`SUBMITTED` thay vì thêm state `REVISION_REQUESTED`/`RESUBMITTED_TO_MENTOR` riêng). Mỗi lần nộp lại, `mentor_feedback`/`mentor_decision_at`/`auto_check_result` của vòng review trước bị xóa về `null` — nếu không, bản nộp mới (chưa ai xem) sẽ trông như đã có quyết định từ vòng cũ, dễ khiến client tưởng nhầm trạng thái và gọi `/submit` lần nữa trong khi `status` thật đã tiến lên `SUBMITTED`.
 
 ### `TaskSubmissionFile` — metadata file đã upload ([requirements.md §14](requirements.md#14-file-upload-requirements))
 
