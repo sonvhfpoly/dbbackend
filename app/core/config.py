@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     VERTEX_LOCATION: str = "asia-southeast1"
     VERTEX_MODEL: str = "gemini-2.5-flash"
 
+    # GCS bucket the AI Task Builder (domains/task_builder) uploads enterprise
+    # documents to. Reuses the same ADC/service account as Vertex AI above —
+    # no separate credentials to manage on Cloud Run. Optional: document
+    # upload returns 503 until this is set, same convention as FPT_CLOUD_API_KEY.
+    TASK_BUILDER_GCS_BUCKET: Optional[str] = None
+
     # Path is resolved relative to the process's current working directory,
     # not this file — the app must be run with cwd=app/ (see README) or this
     # silently falls back to real environment variables only.
