@@ -117,15 +117,29 @@ curl -X POST http://127.0.0.1:8000/tasks/$SUB1_ID/submit \
 
 **Kỳ vọng response `submit`**: `elapsed_seconds` có giá trị (tính từ `joined_at`), `student_reflection` khớp đúng đã gửi.
 
-Đăng ký file đã upload (metadata only — binary tự lo ở pipeline upload riêng, xem [requirements.md §14](requirements.md#14-file-upload-requirements)):
+File, 2 cách (cả 2 cùng giới hạn max 10 file/submission, max 50MB/file — [requirements.md §14](requirements.md#14-file-upload-requirements)):
+
+**(a) Metadata-only** — binary tự lo ở pipeline upload riêng, chỉ đăng ký `file_url` đã có sẵn:
 ```bash
 SUB1_SUBMISSION_ID=<id trả về ở bước join>
 curl -X POST http://127.0.0.1:8000/tasks/submissions/$SUB1_SUBMISSION_ID/files \
   -H "Content-Type: application/json" \
   -d '{"file_name":"report.csv","mime_type":"text/csv","size_bytes":204800,"file_url":"https://storage.example.com/report.csv"}'
-curl http://127.0.0.1:8000/tasks/submissions/$SUB1_SUBMISSION_ID/files
 ```
-**Kỳ vọng**: đăng ký file thứ 11 cho cùng submission → `400` ("already has the maximum of 10 files"); `size_bytes` > 50MB → `422`.
+**Kỳ vọng**: đăng ký file thứ 11 cho cùng submission → `400` ("already has the maximum of 10 files"); `size_bytes` > 50MB (caller tự khai) → `422`.
+
+**(b) Upload thật** — backend nhận binary, tự lưu lên GCS (`SUBMISSION_FILES_GCS_BUCKET`, cần set trước, xem `core/config.py`), trả `file_url` public dạng `https://storage.googleapis.com/...`:
+```bash
+curl -X POST http://127.0.0.1:8000/tasks/submissions/$SUB1_SUBMISSION_ID/files/upload \
+  -F "file=@/path/to/report.csv;type=text/csv"
+```
+**Kỳ vọng**: `file_url` mở được ngay trên browser/`curl` khác, không cần auth (public bucket-IAM, xem `TaskSubmissionFile` ở [DATA_MODEL.md](DATA_MODEL.md)); file > 50MB thật (không phải số caller khai) → `413`.
+
+```bash
+curl http://127.0.0.1:8000/tasks/submissions/$SUB1_SUBMISSION_ID/files
+curl http://127.0.0.1:8000/tasks/submissions/$SUB1_SUBMISSION_ID
+```
+**Kỳ vọng**: cả 2 endpoint đều thấy file vừa đăng ký — endpoint sau (`GET .../submissions/{id}`) nhúng sẵn field `files` giống hệt, không cần gọi thêm endpoint riêng (đáp ứng BUS-11 "Files + review", MEN-13 "Fetch files").
 
 Auto-check + complete:
 ```bash

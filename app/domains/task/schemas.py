@@ -209,6 +209,7 @@ class TaskSubmissionRead(BaseModel):
     completed_by: Optional[CompletionActor] = None
     points_awarded: Optional[int] = None
     completed_at: Optional[datetime] = None
+    files: List[TaskSubmissionFileRead] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
 class TaskSubmissionScoreRead(BaseModel):

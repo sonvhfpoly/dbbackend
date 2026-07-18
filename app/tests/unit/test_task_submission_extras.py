@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from core.exceptions import BusinessLogicException
 from domains.task.service import TaskService
 from domains.task.models import SubmissionStatus
+from domains.task.schemas import TaskSubmissionRead
+from domains.task import storage
 
 def make_service(repo):
     """Same bypass-DB-session pattern as test_task_service.py."""
@@ -115,3 +117,63 @@ def test_register_submission_file_allows_when_under_max():
     file = service.register_submission_file(1, {"file_name": "x.txt", "mime_type": "text/plain", "size_bytes": 10, "file_url": "u"})
 
     assert file.scan_status == "PASSED"  # placeholder scan, no real scanner integrated yet
+
+# ---- real upload path also enforces the 50MB/file cap (requirements.md §14) ----
+# RegisterSubmissionFileRequest's size_bytes field only validates a caller-reported
+# number on the metadata-only path; upload_submission_file controls the actual
+# bytes, so it must check them itself instead of trusting the same schema.
+
+def test_upload_submission_file_rejects_oversized_content():
+    submission = make_submission(1, datetime.utcnow())
+    repo = FakeSubmissionRepo(submissions={(1, 42): submission})
+    service = make_service(repo)
+    oversized = b"x" * (TaskService.MAX_FILE_SIZE_BYTES + 1)
+
+    with pytest.raises(BusinessLogicException):
+        service.upload_submission_file(1, "big.bin", "application/octet-stream", oversized)
+
+    assert repo.created_files == []  # rejected before reaching GCS upload or registration
+
+def test_upload_submission_file_allows_under_size_limit(monkeypatch):
+    submission = make_submission(1, datetime.utcnow())
+    repo = FakeSubmissionRepo(submissions={(1, 42): submission})
+    service = make_service(repo)
+    monkeypatch.setattr(storage, "upload_submission_file", lambda *a, **k: "https://storage.googleapis.com/bucket/x.txt")
+
+    file = service.upload_submission_file(1, "x.txt", "text/plain", b"small content")
+
+    assert file.file_url == "https://storage.googleapis.com/bucket/x.txt"
+
+# ---- TaskSubmissionRead exposes files inline (BUS-11 "Files + review", MEN-13 "Fetch files") ----
+
+def make_submission_file(id, submission_id, uploaded_at, file_name="x.txt", file_url="https://storage.googleapis.com/bucket/x.txt"):
+    return SimpleNamespace(
+        id=id, submission_id=submission_id, file_name=file_name, mime_type="text/plain",
+        size_bytes=10, file_url=file_url, scan_status="PASSED", uploaded_at=uploaded_at,
+    )
+
+def make_full_submission(id, files):
+    now = datetime.utcnow()
+    return SimpleNamespace(
+        id=id, task_id=1, student_id=42, status=SubmissionStatus.SUBMITTED, joined_at=now,
+        report_url=None, submitted_at=now, elapsed_seconds=None, student_reflection=None,
+        auto_check_result=None, mentor_feedback=None, mentor_decision_at=None,
+        completed_by=None, points_awarded=None, completed_at=None, files=files,
+    )
+
+def test_submission_read_serializes_files_in_order():
+    older = make_submission_file(1, 1, datetime.utcnow() - timedelta(hours=1), file_name="a.txt")
+    newer = make_submission_file(2, 1, datetime.utcnow(), file_name="b.txt")
+    submission = make_full_submission(1, files=[older, newer])
+
+    result = TaskSubmissionRead.model_validate(submission)
+
+    assert [f.file_name for f in result.files] == ["a.txt", "b.txt"]
+    assert result.files[0].file_url == older.file_url
+
+def test_submission_read_defaults_files_to_empty_list():
+    submission = make_full_submission(1, files=[])
+
+    result = TaskSubmissionRead.model_validate(submission)
+
+    assert result.files == []
