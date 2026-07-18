@@ -21,6 +21,9 @@ class TaskRepository:
             self.db.refresh(company)
         return company
 
+    def get_company(self, company_id: int) -> Optional[Company]:
+        return self.db.query(Company).filter(Company.id == company_id).first()
+
     def list_companies(self) -> List[Company]:
         return self.db.query(Company).all()
 

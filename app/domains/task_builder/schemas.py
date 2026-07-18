@@ -8,7 +8,7 @@ from .models import ConversationStatus, MessageRole  # noqa: F401
 # ---- Conversation lifecycle ----
 
 class TBConversationCreate(BaseModel):
-    company_id: int
+    company_id: Optional[int] = Field(default=None, description="Omit (or pass an id that isn't registered) to fall back to a shared placeholder company — starting a conversation never fails for a missing/invalid company.")
     created_by: str = Field(description="Caller-supplied identifier for whoever is running this conversation")
     message: str = Field(description="The enterprise's opening request")
 

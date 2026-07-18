@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 from typing import List, Optional
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from core.exceptions import BusinessLogicException, EntityNotFoundException
 from domains.chatbot.service import ChatbotService
@@ -48,6 +49,16 @@ COMPLEXITY_ASSESSMENT_SYSTEM_PROMPT = (
 # is pending/unavailable — overwritten as soon as the assessment succeeds.
 DEFAULT_COMPLEXITY = TaskComplexity.T1
 
+# Lazily created (see TaskService.resolve_company_id) the first time a task
+# is created with a missing or unregistered company_id, so task creation
+# never hard-fails on a bad FK — matched by slug, same idempotent pattern as
+# get_or_create_company's other callers.
+PLACEHOLDER_COMPANY = {
+    "name": "Unregistered Company",
+    "slug": "unregistered-company",
+    "description": "Auto-created placeholder used when a task references a company_id that isn't registered.",
+}
+
 class TaskService:
     def __init__(self, db: Session):
         self.repo = TaskRepository(db)
@@ -61,11 +72,24 @@ class TaskService:
     def list_companies(self):
         return self.repo.list_companies()
 
+    def resolve_company_id(self, company_id: Optional[int]) -> int:
+        """Returns company_id as-is if it references a real Company; otherwise
+        falls back to a shared placeholder company (auto-created on first use).
+        Called from both create_task below and TaskBuilderService.start_conversation
+        so task creation never hard-fails on a missing/stale company_id — the
+        FK stays NOT NULL at the DB level, every row just always gets a real one."""
+        if company_id is not None:
+            company = self.repo.get_company(company_id)
+            if company is not None:
+                return company.id
+        return self.repo.get_or_create_company(dict(PLACEHOLDER_COMPANY)).id
+
     # ---- Task ----
 
     def create_task(self, task: TaskCreate):
         data = task.model_dump()
         skip_ai_planning = data.pop("skip_ai_planning", False)
+        data["company_id"] = self.resolve_company_id(data.get("company_id"))
         self._validate_parent(data.get("parent_task_id"))
         self._validate_criteria_weights(data.get("criteria", []))
 
@@ -85,7 +109,15 @@ class TaskService:
             # (unless skipped, in which case this default is the final value).
             data["complexity_level"] = DEFAULT_COMPLEXITY
 
-        created = self.repo.create_task(data)
+        try:
+            created = self.repo.create_task(data)
+        except IntegrityError as exc:
+            # Safety net, not the primary fix: company_id is already resolved
+            # to a real row above, so this should be rare in practice — but no
+            # constraint violation anywhere in this path should ever leak out
+            # as a raw 500 the way the original company_id bug did.
+            self.repo.db.rollback()
+            raise BusinessLogicException(f"Could not create task: {exc.orig}") from exc
 
         # Only for root tasks: a sub-task is already the AI-planned (or manual)
         # granular unit, so it isn't itself a candidate for further splitting

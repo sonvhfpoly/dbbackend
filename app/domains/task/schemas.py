@@ -68,7 +68,7 @@ class TaskEvaluationCriterionRead(TaskEvaluationCriterionCreate):
 
 class TaskBase(BaseModel):
     title: str
-    company_id: int
+    company_id: Optional[int] = Field(default=None, description="Omit (or pass an id that isn't registered) to fall back to a shared placeholder company — task creation never fails for a missing/invalid company.")
     parent_task_id: Optional[int] = Field(default=None, description="Set to make this a sub-task. The referenced task must itself be a root task (max depth 2).")
     sort_order: int = 0
     estimated_hours_min: int
