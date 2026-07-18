@@ -424,7 +424,9 @@ class TaskService:
     def mentor_review(self, submission_id: int, approved: bool, feedback: Optional[str]):
         submission = self._get_submission_or_404(submission_id)
         task = self.get_task(submission.task_id)
-        expected = {SubmissionStatus.AUTO_CHECK_PASSED} if task.requires_auto_check else {SubmissionStatus.SUBMITTED}
+        expected = {SubmissionStatus.SUBMITTED}
+        if task.requires_auto_check:
+            expected.add(SubmissionStatus.AUTO_CHECK_PASSED)
         self._require_status(submission, expected)
         return self.repo.update_submission(
             submission_id,

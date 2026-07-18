@@ -225,6 +225,30 @@ def test_create_task_root_skip_ai_planning_uses_default_and_never_calls_chatbot(
     assert created.complexity_level == TaskComplexity.T1  # default, not AI-assessed
     assert repo.created_tasks == [created]  # no sub-tasks spawned
 
+def test_mentor_review_accepts_submitted_status_when_auto_check_is_required():
+    class ReviewRepo(FakeRepo):
+        def __init__(self, task, submission):
+            super().__init__(tasks={task.id: task})
+            self.submission_by_id = {submission.id: submission}
+
+        def get_submission(self, submission_id):
+            return self.submission_by_id.get(submission_id)
+
+        def update_submission(self, submission_id, **fields):
+            submission = self.submission_by_id[submission_id]
+            for key, value in fields.items():
+                setattr(submission, key, value)
+            return submission
+
+    task = SimpleNamespace(id=1, requires_auto_check=True, requires_mentor_approval=True)
+    submission = SimpleNamespace(id=2, task_id=1, status=SubmissionStatus.SUBMITTED)
+    repo = ReviewRepo(task, submission)
+    service = make_service(repo)
+
+    result = service.mentor_review(2, approved=True, feedback="Looks good")
+
+    assert result.status == SubmissionStatus.MENTOR_APPROVED
+
 # ---- resolve_company_id: task creation must never fail on a missing/bad company_id ----
 
 def test_resolve_company_id_returns_id_as_is_when_company_exists():
