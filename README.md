@@ -9,12 +9,12 @@ Chi tiết kiến trúc, design pattern, và roadmap từng sprint xem tại [IM
 | Domain | Models | Router (API) | Ghi chú |
 | :--- | :--- | :--- | :--- |
 | `market` (Dev 1) | ✅ | ✅ đã mount vào `main.py` | Ingestion, skill demand, skill trend, auto-update `market_trend` |
-| `student` (Dev 2) | ✅ | ❌ chưa có | Chỉ có model + repository, chưa có service/router riêng — `guidance` seed tạm tạo 1 demo student qua repository có sẵn |
+| `student` (Dev 2) | ✅ | ✅ đã mount vào `main.py` | Student CRUD, profile, skill-profile/skill-event, career-skill-requirement, và rule-based career-recommendation engine (merge từ `backendstudent`) |
 | `guidance` (Dev 3) | ✅ | ✅ đã mount vào `main.py` | Recommendation engine + `AntiBiasEngine` (Strategy Pattern) |
 | `chatbot` | — (stateless) | ✅ đã mount vào `main.py` | Proxy tới FPT Cloud chat-completions API; không có bảng DB |
 | `task` | ✅ | ✅ đã mount vào `main.py` | Company-sponsored task marketplace, hỗ trợ sub-task, workflow nộp/duyệt/chấm điểm đầy đủ trạng thái |
 
-`student` chưa có router riêng (chưa đến lượt theo roadmap Sprint), nhưng bảng của nó đã tồn tại và `guidance` đọc/ghi trực tiếp qua `StudentRepository` có sẵn.
+`guidance` đọc/ghi student qua `StudentRepository` có sẵn; `market` sở hữu catalog `Skill`/`Career` dùng chung (kể cả cho career-recommendation của `student`).
 
 ## Kiến trúc
 
@@ -26,7 +26,7 @@ app/
 ├── core/                # config (Pydantic Settings), database (engine/session/Base), security (JWT), exceptions
 ├── domains/
 │   ├── market/          # Dev 1 — Skill, Career, JobPosting, JobSkill, CareerSkill
-│   ├── student/         # Dev 2 — Student, InteractionLog, StudentSkillAssociation
+│   ├── student/         # Dev 2 — Student, InteractionLog, StudentSkill, StudentProfile, StudentSkillProfile/Event, CareerSkillRequirement, StudentCareerRecommendation
 │   ├── guidance/        # Dev 3 — EducationPath, Recommendation
 │   ├── chatbot/         # Stateless proxy to an external LLM chat API (no models.py)
 │   └── task/            # Company, Task (self-referential sub-task), TaskSubmission, TaskSubmissionScore

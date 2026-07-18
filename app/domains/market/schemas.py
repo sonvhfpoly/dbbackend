@@ -34,6 +34,11 @@ class SkillBase(BaseModel):
 class SkillCreate(SkillBase):
     pass
 
+class SkillUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+
 class SkillRead(SkillBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
@@ -47,6 +52,11 @@ class CareerBase(BaseModel):
 
 class CareerCreate(CareerBase):
     pass
+
+class CareerUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    market_trend: Optional[MarketTrend] = None
 
 class CareerRead(CareerBase):
     id: int
