@@ -503,7 +503,6 @@ class TaskService:
                 completed_by=CompletionActor.AI, points_awarded=task.competency_points,
                 completed_at=datetime.utcnow(),
             )
-            self._refresh_career_recommendations(completed)
             return completed
 
         return self.repo.update_submission(
@@ -542,7 +541,6 @@ class TaskService:
             points_awarded=task.competency_points,
             completed_at=datetime.utcnow(),
         )
-        self._refresh_career_recommendations(completed)
         return completed
 
     def score_criterion(self, submission_id: int, criterion_id: int, score_percent: int, feedback: Optional[str], scored_by: CompletionActor):
@@ -585,31 +583,7 @@ class TaskService:
             points_awarded=task.competency_points,
             completed_at=datetime.utcnow(),
         )
-        self._refresh_career_recommendations(completed)
         return completed
-
-    def _refresh_career_recommendations(self, submission) -> None:
-        """Best-effort post-completion refresh.
-
-        Completion is already committed before the LLM call. An unavailable
-        provider or an incomplete career catalog must never roll back a
-        student's completed work; the explicit generate API can be retried.
-        """
-        db = getattr(self.repo, "db", None)
-        if db is None:
-            # Pure unit-test repositories do not expose a SQLAlchemy session.
-            return
-        try:
-            from domains.student.schemas import RecommendationGenerateRequest
-            from domains.student.service import StudentProfileService
-            StudentProfileService(db).generate_student_career_recommendations(
-                submission.student_id,
-                RecommendationGenerateRequest(limit=5, persist=True),
-            )
-        except Exception:
-            # This hook is intentionally non-blocking for the task state
-            # machine. The manual endpoint surfaces the actual LLM error.
-            return
 
     def get_submission(self, submission_id: int):
         return self._get_submission_or_404(submission_id)

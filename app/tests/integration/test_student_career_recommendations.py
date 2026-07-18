@@ -1,4 +1,5 @@
 import pytest
+from fastapi import BackgroundTasks
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -12,6 +13,7 @@ from domains.student.service import StudentProfileService
 from domains.task.models import CompletionActor, SubmissionStatus, TaskComplexity
 from domains.task.repository import TaskRepository
 from domains.task.service import TaskService
+from domains.task.router import _schedule_career_refresh
 
 
 @pytest.fixture
@@ -119,7 +121,7 @@ def test_llm_recommendation_uses_completed_task_skills_and_upserts(db):
     assert db.query(StudentCareerRecommendation).count() == 1
 
 
-def test_task_completion_triggers_recommendation_refresh(db, monkeypatch):
+def test_task_completion_schedules_background_recommendation_refresh(db):
     student, _, task = seed_completed_task(db)
     tasks = TaskRepository(db)
     # Use a fresh submitted row so mentor_review performs the terminal transition.
@@ -135,21 +137,13 @@ def test_task_completion_triggers_recommendation_refresh(db, monkeypatch):
     )
     submission = tasks.create_submission(second_task.id, student.id)
     tasks.update_submission(submission.id, status=SubmissionStatus.SUBMITTED)
-    calls = []
-
-    def fake_generate(self, student_id, payload):
-        calls.append((student_id, payload.persist))
-        return []
-
-    monkeypatch.setattr(
-        StudentProfileService,
-        "generate_student_career_recommendations",
-        fake_generate,
-    )
     service = object.__new__(TaskService)
     service.repo = tasks
+    background_tasks = BackgroundTasks()
 
     completed = service.mentor_review(submission.id, approved=True, feedback="Tốt")
+    _schedule_career_refresh(background_tasks, completed)
 
     assert completed.status == SubmissionStatus.COMPLETED
-    assert calls == [(student.id, True)]
+    assert len(background_tasks.tasks) == 1
+    assert background_tasks.tasks[0].args == (student.id,)
