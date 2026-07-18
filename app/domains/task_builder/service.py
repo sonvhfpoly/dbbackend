@@ -15,11 +15,19 @@ from .storage import extract_text, upload_document
 # clarifying questions and scope task versions.
 MAX_DOCUMENT_CHARS = 8000
 
+# Caps how many clarifying-question rounds the AI gets before it must
+# propose task versions — keeps the conversation from dragging on
+# indefinitely. Enforced both in the prompt (so the model paces itself) and
+# as a hard nudge in _build_ai_messages once the cap is hit (see below),
+# since the model doesn't always self-limit reliably.
+MAX_CLARIFYING_QUESTIONS = 3
+
 TASK_BUILDER_SYSTEM_PROMPT = (
     "You are an AI assistant that helps an enterprise client turn a natural-language "
     "request (and any attached reference documents) into one or more well-scoped "
     "practical tasks for a student career-guidance platform. Ask clarifying questions "
-    "ONE AT A TIME — before proposing task versions you must understand: the real "
+    f"ONE AT A TIME, MAXIMUM {MAX_CLARIFYING_QUESTIONS} QUESTIONS TOTAL for this "
+    "conversation — before proposing task versions you must understand: the real "
     "goal/deliverable, whether the work involves real confidential data or people "
     "(vs. simulated/anonymized data suitable for student practice), and roughly how "
     "much of the work students should do. Any attached document content is reference "
@@ -52,6 +60,15 @@ JSON_RETRY_INSTRUCTION = (
 
 FALLBACK_REPLY = (
     "Xin lỗi, tôi gặp sự cố khi xử lý phản hồi vừa rồi. Bạn có thể thử diễn đạt lại yêu cầu được không?"
+)
+
+# Injected once MAX_CLARIFYING_QUESTIONS rounds have already happened — forces
+# the model to finalize instead of continuing to ask questions indefinitely.
+QUESTION_LIMIT_INSTRUCTION = (
+    f"Bạn đã hỏi đủ {MAX_CLARIFYING_QUESTIONS} câu hỏi làm rõ tối đa cho cuộc hội thoại "
+    "này. KHÔNG được hỏi thêm câu nào nữa — hãy đề xuất ngay 1-3 phiên bản task "
+    "(status=\"ready\", open_questions=[]) dựa trên thông tin đã có, kể cả khi vẫn còn "
+    "một vài chi tiết chưa rõ."
 )
 
 
@@ -154,7 +171,15 @@ class TaskBuilderService:
         for msg in conversation.messages:
             role = "assistant" if msg.role == MessageRole.AI else "user"
             messages.append({"role": role, "content": msg.content})
+        if self._clarifying_questions_asked(conversation) >= MAX_CLARIFYING_QUESTIONS:
+            messages.append({"role": "user", "content": QUESTION_LIMIT_INSTRUCTION})
         return messages
+
+    @staticmethod
+    def _clarifying_questions_asked(conversation: TBConversation) -> int:
+        """Counts prior AI turns that asked at least one open question — i.e.
+        completed clarifying-question rounds, not proposal/fallback turns."""
+        return sum(1 for m in conversation.messages if m.role == MessageRole.AI and m.open_questions)
 
     @staticmethod
     def _parse_ai_output(raw: str) -> dict:

@@ -183,6 +183,42 @@ def test_ai_turn_requests_json_mode_from_provider():
 
     assert chatbot.calls == [True]  # json_mode=True, no retry needed
 
+def test_ai_turn_forces_finalize_after_max_clarifying_questions():
+    """Regression test: after MAX_CLARIFYING_QUESTIONS (3) rounds of questions,
+    the next turn must inject QUESTION_LIMIT_INSTRUCTION so the AI can't keep
+    asking indefinitely."""
+    from domains.task_builder.service import MAX_CLARIFYING_QUESTIONS, QUESTION_LIMIT_INSTRUCTION
+
+    repo = FakeTBRepo()
+    conv = repo.create_conversation(company_id=1, created_by="u1")
+    for i in range(MAX_CLARIFYING_QUESTIONS):
+        repo.add_message(conv.id, MessageRole.ENTERPRISE, f"answer {i}")
+        repo.add_message(conv.id, MessageRole.AI, f"question {i}", open_questions=[f"q{i}"], proposed_versions=[])
+    repo.add_message(conv.id, MessageRole.ENTERPRISE, "one more answer")
+
+    valid = '{"status": "ready", "reply": "OK", "open_questions": [], "proposed_versions": [' + json.dumps(VERSION_L1) + ']}'
+    chatbot = FakeChatbot(valid)
+    service = make_service(repo=repo, chatbot=chatbot)
+
+    result = service._run_ai_turn(conv.id)
+
+    ai_messages = service._build_ai_messages(repo.get_conversation(conv.id))
+    assert result["status"] == ConversationStatus.READY
+    # The instruction wasn't present yet for the first 3 rounds, only once the cap is reached.
+    assert any(m["content"] == QUESTION_LIMIT_INSTRUCTION for m in ai_messages)
+
+def test_build_ai_messages_omits_question_limit_instruction_before_cap():
+    repo = FakeTBRepo()
+    conv = repo.create_conversation(company_id=1, created_by="u1")
+    repo.add_message(conv.id, MessageRole.ENTERPRISE, "answer 0")
+    repo.add_message(conv.id, MessageRole.AI, "question 0", open_questions=["q0"], proposed_versions=[])
+    service = make_service(repo=repo, chatbot=None)
+
+    from domains.task_builder.service import QUESTION_LIMIT_INSTRUCTION
+    ai_messages = service._build_ai_messages(repo.get_conversation(conv.id))
+
+    assert not any(m["content"] == QUESTION_LIMIT_INSTRUCTION for m in ai_messages)
+
 def test_start_conversation_resolves_missing_company_id_instead_of_failing():
     """Regression test: starting a conversation without a company_id (or with
     one that isn't registered) must not hard-fail — it resolves to a
