@@ -5,6 +5,7 @@ from domains.market.router import router as market_router
 from domains.chatbot.router import router as chatbot_router
 from domains.guidance.router import router as guidance_router
 from domains.task.router import router as task_router
+from domains.task_builder.router import router as task_builder_router
 
 # Import every domain's models so their tables are registered on Base.metadata
 # before create_all runs, even for domains without a router wired up yet.
@@ -13,6 +14,7 @@ from domains.market import models as market_models  # noqa: F401
 from domains.student import models as student_models  # noqa: F401
 from domains.guidance import models as guidance_models  # noqa: F401
 from domains.task import models as task_models  # noqa: F401
+from domains.task_builder import models as task_builder_models  # noqa: F401
 
 Base.metadata.create_all(bind=engine)
 
@@ -43,6 +45,11 @@ tags_metadata = [
                        "competency points, through a join → submit → auto-check → mentor-review → complete workflow.",
     },
     {
+        "name": "AI Task Builder",
+        "description": "Enterprise-facing AI chat that turns a natural-language request and reference "
+                       "documents into a structured, mentor-approvable Task.",
+    },
+    {
         "name": "Dev Tools",
         "description": "Local development and demo utilities — not part of the production guidance flow.",
     },
@@ -60,6 +67,7 @@ app.include_router(market_router)
 app.include_router(chatbot_router)
 app.include_router(guidance_router)
 app.include_router(task_router)
+app.include_router(task_builder_router)
 
 @app.get("/")
 def read_root():
