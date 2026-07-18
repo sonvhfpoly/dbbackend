@@ -3,9 +3,11 @@ from datetime import datetime
 from typing import List, Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from fastapi import status
 from core.exceptions import BusinessLogicException, EntityNotFoundException
 from domains.chatbot.service import ChatbotService
 from domains.market.repository import MarketRepository
+from . import storage
 from .repository import TaskRepository
 from .models import SubmissionStatus, CompletionActor, Task, TaskReviewStatus, TaskRiskLevel, TaskComplexity
 from .schemas import CompanyCreate, TaskCreate
@@ -525,12 +527,40 @@ class TaskService:
         )
 
     # ---- Submission files ----
-    # requirements.md §14: max 50MB/file (enforced by RegisterSubmissionFileRequest's
-    # size_bytes bound) and max 10 files/submission (enforced here).
+    # requirements.md §14: max 50MB/file and max 10 files/submission. The
+    # 50MB bound is enforced twice: RegisterSubmissionFileRequest's size_bytes
+    # field (metadata-only path, caller self-reports the size) and explicitly
+    # below in upload_submission_file (real upload path, where we control the
+    # actual bytes and can't trust a self-reported size).
 
     MAX_FILES_PER_SUBMISSION = 10
+    MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 
     def register_submission_file(self, submission_id: int, data: dict):
+        """For a file already hosted elsewhere (requirements.md §14's "external
+        link" case) — the caller supplies file_url directly. For an actual
+        upload handled by this backend, see upload_submission_file below."""
+        return self._create_submission_file(submission_id, data)
+
+    def upload_submission_file(self, submission_id: int, filename: str, content_type: Optional[str], content: bytes):
+        """Uploads the file to GCS (public URL — see domains/task/storage.py)
+        and registers it in one step, instead of requiring the caller to
+        host it themselves first."""
+        self._get_submission_or_404(submission_id)  # 404s before spending an upload on a bad submission_id
+        if len(content) > self.MAX_FILE_SIZE_BYTES:
+            raise BusinessLogicException(
+                f"File exceeds the {self.MAX_FILE_SIZE_BYTES // (1024 * 1024)}MB/file limit",
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            )
+        file_url = storage.upload_submission_file(submission_id, filename, content_type, content)
+        return self._create_submission_file(submission_id, {
+            "file_name": filename,
+            "mime_type": content_type or "application/octet-stream",
+            "size_bytes": len(content),
+            "file_url": file_url,
+        })
+
+    def _create_submission_file(self, submission_id: int, data: dict):
         self._get_submission_or_404(submission_id)
         if self.repo.count_submission_files(submission_id) >= self.MAX_FILES_PER_SUBMISSION:
             raise BusinessLogicException(

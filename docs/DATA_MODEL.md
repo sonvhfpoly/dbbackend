@@ -92,6 +92,7 @@ Bảng con 1-N của `Task` — input tài liệu/dataset, output mong đợi, t
 | completed_by | enum `CompletionActor` (AI/MENTOR), nullable | |
 | points_awarded | int, nullable | **snapshot** `Task.competency_points` tại thời điểm hoàn thành |
 | completed_at | datetime, nullable | |
+| **files** | `List[TaskSubmissionFile]`, chỉ đọc | relationship (`order_by uploaded_at`), không phải cột DB — nhúng sẵn trong `TaskSubmissionRead` để `GET /tasks/submissions`/`GET /tasks/submissions/{id}`/`GET /tasks/{id}/progress` trả kèm file luôn, khỏi cần gọi thêm `GET /submissions/{id}/files` riêng ([requirements.md BUS-11 "Files + review"](requirements.md#6-functional-requirements--business), [MEN-13 "Fetch files"](requirements.md#8-functional-requirements--mentor)) |
 
 **State machine** (`SubmissionStatus`):
 ```
@@ -118,7 +119,15 @@ Nếu `Task.requires_mentor_approval=false`, có thể đi thẳng `AUTO_CHECK_P
 | scan_status | enum `FileScanStatus` (PENDING/PASSED/FAILED) | placeholder — chưa tích hợp virus scanner thật, đăng ký file tự động `PASSED` |
 | uploaded_at | datetime | |
 
-Giới hạn MVP: **max 50MB/file** (validate ở schema `RegisterSubmissionFileRequest`), **max 10 file/submission** (validate ở `TaskService.register_submission_file`).
+Giới hạn MVP: **max 50MB/file**, **max 10 file/submission** (`TaskService.MAX_FILE_SIZE_BYTES`/`MAX_FILES_PER_SUBMISSION`).
+
+Hai đường đăng ký file, cùng đi qua `TaskService._create_submission_file` (giới hạn 10 file/submission dùng chung):
+- `POST /tasks/submissions/{id}/files` — **metadata-only**: caller tự lo upload binary ở pipeline riêng, chỉ gửi `file_url` đã có sẵn (case "external link" — requirements.md §14). 50MB/file validate ở schema `RegisterSubmissionFileRequest` (`size_bytes` do caller tự khai, không đối chiếu file thật).
+- `POST /tasks/submissions/{id}/files/upload` — **upload thật**: multipart, backend nhận bytes và tự lưu lên GCS (`domains/task/storage.py`), 50MB/file validate lại trên chính bytes nhận được (`TaskService.upload_submission_file`, không dựa vào con số caller khai).
+
+**Public URL — lệch có chủ đích khỏi requirements.md §14** (§14 yêu cầu `private storage; signed URL; permission check`): file lưu ở bucket `SUBMISSION_FILES_GCS_BUCKET` riêng, được public ở mức bucket-IAM (`allUsers:objectViewer`) — `file_url` trả về là `https://storage.googleapis.com/...` xem được ngay, không cần auth/signed URL. Chọn vậy để đơn giản hoá demo/MVP (nhất quán với quyết định [no-auth](ARCHITECTURE.md#3-không-có-authrbac--quyết-định-có-chủ-đích) toàn dự án) — **không phải thiếu sót**, mà là đánh đổi đã cân nhắc. Tách bucket riêng khỏi `TASK_BUILDER_GCS_BUCKET` (tài liệu tham khảo doanh nghiệp, vẫn phải private) vì `uniform-bucket-level-access` không thể public theo path/prefix trong cùng 1 bucket.
+
+**Chưa làm** (biết trước, ngoài phạm vi hiện tại): MIME allow-list (§14 liệt kê DOCX/PDF/XLSX/PPTX/ZIP/PNG/JPG nhưng "Có thể hỗ trợ", không bắt buộc), virus scan thật (`NFR-16`, hiện là placeholder), download có kiểm soát cho `TaskInput` (`STU-09` "Download Input, Signed URL" — `TaskInput` hiện không có storage file thật, chỉ mô tả), và audit log `ActivityEvent`/`SUBMISSION_FILE_UPLOADED` (§17/§18 — hệ thống audit log tổng quát này chưa tồn tại ở bất kỳ domain nào).
 
 ### `TaskSubmissionScore` — điểm chấm theo từng tiêu chí
 Khác `TaskEvaluationCriterion` (rubric tĩnh) — bảng này lưu kết quả chấm thật cho 1 submission cụ thể. Upsert theo `(submission_id, criterion_id)`.

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from core.database import get_db
@@ -160,6 +160,19 @@ def submit_report(task_id: int, request: SubmitReportRequest, db: Session = Depe
 )
 def register_submission_file(submission_id: int, request: RegisterSubmissionFileRequest, db: Session = Depends(get_db)):
     return TaskService(db).register_submission_file(submission_id, request.model_dump())
+
+@router.post(
+    "/submissions/{submission_id}/files/upload",
+    response_model=TaskSubmissionFileRead,
+    summary="Upload a deliverable file directly",
+    description="Stores the file in GCS and registers it in one step — the resulting file_url is public (anyone "
+                "with the link can view it, no auth required; a deliberate MVP/demo simplification via a bucket-level "
+                "IAM exception, see docs/DATA_MODEL.md). Same 10 files/submission limit as the metadata-only "
+                "registration endpoint above.",
+)
+async def upload_submission_file(submission_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = await file.read()
+    return TaskService(db).upload_submission_file(submission_id, file.filename, file.content_type, content)
 
 @router.get("/submissions/{submission_id}/files", response_model=List[TaskSubmissionFileRead], summary="List a submission's uploaded files")
 def list_submission_files(submission_id: int, db: Session = Depends(get_db)):

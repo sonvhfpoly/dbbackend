@@ -245,7 +245,10 @@ class TaskSubmission(Base):
 
     task = relationship("Task")
     scores = relationship("TaskSubmissionScore", back_populates="submission", cascade="all, delete-orphan")
-    files = relationship("TaskSubmissionFile", back_populates="submission", cascade="all, delete-orphan")
+    files = relationship(
+        "TaskSubmissionFile", back_populates="submission",
+        cascade="all, delete-orphan", order_by="TaskSubmissionFile.uploaded_at",
+    )
 
 class TaskSubmissionFile(Base):
     """Metadata for one uploaded deliverable file (requirements.md §14) — the
