@@ -128,6 +128,9 @@ class MarketRepository:
         self.db.refresh(job)
         return job
 
+    def get_job(self, job_id: int) -> Optional[Job]:
+        return self.db.query(Job).filter(Job.id == job_id).first()
+
     def get_jobs(self, trend: Optional[str] = None, career_id: Optional[int] = None) -> List[Job]:
         query = self.db.query(Job)
         if trend:
