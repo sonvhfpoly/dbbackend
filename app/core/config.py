@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     FPT_CLOUD_BASE_URL: str = "https://mkp-api.fptcloud.com"
     FPT_CLOUD_CHAT_MODEL: str = "gemma-4-31B-it"
 
+    # Vertex AI (Gemini) — preferred over FPT Cloud when Application Default
+    # Credentials and a project can be resolved (always true on Cloud Run with
+    # a service account attached: credentials load automatically, no key to
+    # manage). VERTEX_PROJECT_ID is optional; unset it to auto-detect the
+    # project from ADC. See domains/chatbot/providers.py for the fallback logic.
+    VERTEX_PROJECT_ID: Optional[str] = None
+    VERTEX_LOCATION: str = "asia-southeast1"
+    VERTEX_MODEL: str = "gemini-2.5-flash"
+
     # Path is resolved relative to the process's current working directory,
     # not this file — the app must be run with cwd=app/ (see README) or this
     # silently falls back to real environment variables only.

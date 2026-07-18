@@ -22,6 +22,7 @@ class ChatResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class ChatbotHealth(BaseModel):
-    configured: bool = Field(description="Whether FPT_CLOUD_API_KEY is set for this environment")
+    configured: bool = Field(description="Whether the active AI provider is configured for this environment")
     reachable: Optional[bool] = Field(default=None, description="Result of a live upstream call; null unless ?deep=true was requested")
+    provider: str = Field(description="Which AI provider is active: 'vertex_ai' or 'fpt_cloud'")
     model: str
