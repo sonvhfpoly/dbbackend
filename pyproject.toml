@@ -14,6 +14,7 @@ dependencies = [
     "passlib[bcrypt]>=1.7",
     "requests>=2.34.2",
     "litellm>=1.92.0",
+    "google-genai>=2.12.1",
 ]
 
 [tool.uv]

@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends
-from core.config import settings
 from .schemas import ChatRequest, ChatResponse, ChatbotHealth
 from .service import ChatbotService
 
@@ -14,7 +13,7 @@ def get_chatbot_service() -> ChatbotService:
 @router.post("/chat", response_model=ChatResponse, summary="Chat with the career-guidance assistant")
 def chat(request: ChatRequest, service: ChatbotService = Depends(get_chatbot_service)):
     reply = service.chat(request.message, request.history)
-    return ChatResponse(reply=reply, model=settings.FPT_CLOUD_CHAT_MODEL)
+    return ChatResponse(reply=reply, model=service.model)
 
 @router.get(
     "/health",
@@ -25,4 +24,4 @@ def chat(request: ChatRequest, service: ChatbotService = Depends(get_chatbot_ser
 )
 def health(deep: bool = False, service: ChatbotService = Depends(get_chatbot_service)):
     configured, reachable = service.check_health(deep=deep)
-    return ChatbotHealth(configured=configured, reachable=reachable, model=settings.FPT_CLOUD_CHAT_MODEL)
+    return ChatbotHealth(configured=configured, reachable=reachable, provider=service.provider_name, model=service.model)
