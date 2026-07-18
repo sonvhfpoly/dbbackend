@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 from sqlalchemy.orm import Session
+from core.exceptions import EntityNotFoundException
 from .repository import MarketRepository
 from .models import MarketTrend, SeniorityLevel
-from .schemas import SkillCreate, CareerCreate, JobCreate, JobPostingCreate
+from .schemas import SkillCreate, SkillUpdate, CareerCreate, CareerUpdate, JobCreate, JobPostingCreate
 from .seed_data import SEED_SKILLS, SEED_CAREER, SEED_JOBS, SEED_GENERAL_SKILLS, SEED_JOB_POSTINGS
 
 # A Job/Career's demand is considered meaningfully changed only past this
@@ -40,6 +41,25 @@ class MarketService:
     def create_skill(self, skill: SkillCreate):
         return self.repo.create_skill(skill.model_dump())
 
+    def get_all_skills(self, skip: int = 0, limit: int = 100):
+        return self.repo.list_skills(skip=skip, limit=limit)
+
+    def get_skill(self, skill_id: int):
+        skill = self.repo.get_skill(skill_id)
+        if skill is None:
+            raise EntityNotFoundException("Skill", skill_id)
+        return skill
+
+    def update_skill(self, skill_id: int, skill: SkillUpdate):
+        updated = self.repo.update_skill(skill_id, skill.model_dump(exclude_unset=True))
+        if updated is None:
+            raise EntityNotFoundException("Skill", skill_id)
+        return updated
+
+    def delete_skill(self, skill_id: int) -> None:
+        if not self.repo.delete_skill(skill_id):
+            raise EntityNotFoundException("Skill", skill_id)
+
     # ---- Career (broadest grouping — "nganh") ----
 
     def get_all_careers(self, trend: str = None):
@@ -47,6 +67,25 @@ class MarketService:
 
     def create_career(self, career: CareerCreate):
         return self.repo.create_career(career.model_dump())
+
+    def get_career(self, career_id: int):
+        career = self.repo.get_career(career_id)
+        if career is None:
+            raise EntityNotFoundException("Career", career_id)
+        return career
+
+    def update_career(self, career_id: int, career: CareerUpdate):
+        values = career.model_dump(exclude_unset=True)
+        if "market_trend" in values and values["market_trend"] is not None:
+            values["market_trend"] = MarketTrend(values["market_trend"])
+        updated = self.repo.update_career(career_id, values)
+        if updated is None:
+            raise EntityNotFoundException("Career", career_id)
+        return updated
+
+    def delete_career(self, career_id: int) -> None:
+        if not self.repo.delete_career(career_id):
+            raise EntityNotFoundException("Career", career_id)
 
     # ---- Job (specific job family within a Career) ----
 

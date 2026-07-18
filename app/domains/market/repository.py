@@ -13,12 +13,33 @@ class MarketRepository:
     def get_skill(self, skill_id: int) -> Optional[Skill]:
         return self.db.query(Skill).filter(Skill.id == skill_id).first()
 
+    def list_skills(self, skip: int = 0, limit: int = 100) -> List[Skill]:
+        return self.db.query(Skill).order_by(Skill.name.asc()).offset(skip).limit(limit).all()
+
     def create_skill(self, skill_data: dict) -> Skill:
         db_skill = Skill(**skill_data)
         self.db.add(db_skill)
         self.db.commit()
         self.db.refresh(db_skill)
         return db_skill
+
+    def update_skill(self, skill_id: int, values: dict) -> Optional[Skill]:
+        skill = self.get_skill(skill_id)
+        if skill is None:
+            return None
+        for field, value in values.items():
+            setattr(skill, field, value)
+        self.db.commit()
+        self.db.refresh(skill)
+        return skill
+
+    def delete_skill(self, skill_id: int) -> bool:
+        skill = self.get_skill(skill_id)
+        if skill is None:
+            return False
+        self.db.delete(skill)
+        self.db.commit()
+        return True
 
     # Matched by name (unique) rather than an external id, since seed/demo data
     # has no stable id to key off of and calling this repeatedly must not raise
@@ -30,6 +51,27 @@ class MarketRepository:
         return skill
 
     # ---- Career (broadest grouping — "nganh", e.g. "Cong nghe thong tin") ----
+
+    def get_career(self, career_id: int) -> Optional[Career]:
+        return self.db.query(Career).filter(Career.id == career_id).first()
+
+    def update_career(self, career_id: int, values: dict) -> Optional[Career]:
+        career = self.get_career(career_id)
+        if career is None:
+            return None
+        for field, value in values.items():
+            setattr(career, field, value)
+        self.db.commit()
+        self.db.refresh(career)
+        return career
+
+    def delete_career(self, career_id: int) -> bool:
+        career = self.get_career(career_id)
+        if career is None:
+            return False
+        self.db.delete(career)
+        self.db.commit()
+        return True
 
     def get_or_create_career(self, title: str, description: Optional[str] = None) -> Career:
         career = self.db.query(Career).filter(Career.title == title).first()

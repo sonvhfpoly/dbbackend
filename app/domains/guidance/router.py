@@ -49,8 +49,8 @@ def list_recommendations(student_id: int, db: Session = Depends(get_db)):
 @router.post(
     "/seed-demo-data",
     tags=["Dev Tools"],
-    summary="Populate a sample education-path catalog and one demo student for local testing/demos",
-    description="Idempotent for education paths (matched by name) and the demo student (matched by email). "
+    summary="Populate a sample education-path catalog and demo students (with skill tags) for local testing/demos",
+    description="Idempotent for education paths (matched by name) and demo students (matched by email). "
                 "Disabled when ENABLE_SEED_ENDPOINT=false, which should be the case in any production deployment.",
 )
 def seed_demo_data(db: Session = Depends(get_db)):

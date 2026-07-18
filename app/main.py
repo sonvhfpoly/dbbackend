@@ -6,6 +6,7 @@ from domains.chatbot.router import router as chatbot_router
 from domains.guidance.router import router as guidance_router
 from domains.task.router import router as task_router
 from domains.task_builder.router import router as task_builder_router
+from domains.student.router import router as student_router
 
 # Import every domain's models so their tables are registered on Base.metadata
 # before create_all runs, even for domains without a router wired up yet.
@@ -68,6 +69,7 @@ app.include_router(chatbot_router)
 app.include_router(guidance_router)
 app.include_router(task_router)
 app.include_router(task_builder_router)
+app.include_router(student_router)
 
 @app.get("/")
 def read_root():

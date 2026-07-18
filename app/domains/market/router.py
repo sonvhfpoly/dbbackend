@@ -4,7 +4,8 @@ from typing import List, Optional
 from core.database import get_db
 from core.config import settings
 from .schemas import (
-    SkillRead, SkillCreate, CareerRead, CareerCreate, JobRead, JobCreate, JobPostingCreate,
+    SkillRead, SkillCreate, SkillUpdate, CareerRead, CareerCreate, CareerUpdate,
+    JobRead, JobCreate, JobPostingCreate,
     MarketTrend, SkillDemandTrend, JobDemandTrend, MarketOverviewRead, SeniorityLevel,
 )
 from .service import MarketService
@@ -19,6 +20,26 @@ def create_skill(skill: SkillCreate, db: Session = Depends(get_db)):
     service = MarketService(db)
     return service.create_skill(skill)
 
+@router.get("/skills/", response_model=List[SkillRead], summary="List skills")
+def list_skills(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.get_all_skills(skip=skip, limit=limit)
+
+@router.get("/skills/{skill_id}", response_model=SkillRead, summary="Get a skill by id")
+def get_skill(skill_id: int, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.get_skill(skill_id)
+
+@router.patch("/skills/{skill_id}", response_model=SkillRead, summary="Update a skill")
+def update_skill(skill_id: int, skill: SkillUpdate, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.update_skill(skill_id, skill)
+
+@router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a skill")
+def delete_skill(skill_id: int, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    service.delete_skill(skill_id)
+
 @router.get("/careers/", response_model=List[CareerRead], summary="List careers (industries), optionally filtered by market trend")
 def list_careers(trend: Optional[MarketTrend] = None, db: Session = Depends(get_db)):
     service = MarketService(db)
@@ -30,6 +51,21 @@ def list_careers(trend: Optional[MarketTrend] = None, db: Session = Depends(get_
 def create_career(career: CareerCreate, db: Session = Depends(get_db)):
     service = MarketService(db)
     return service.create_career(career)
+
+@router.get("/careers/{career_id}", response_model=CareerRead, summary="Get a career by id")
+def get_career(career_id: int, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.get_career(career_id)
+
+@router.patch("/careers/{career_id}", response_model=CareerRead, summary="Update a career")
+def update_career(career_id: int, career: CareerUpdate, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    return service.update_career(career_id, career)
+
+@router.delete("/careers/{career_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a career")
+def delete_career(career_id: int, db: Session = Depends(get_db)):
+    service = MarketService(db)
+    service.delete_career(career_id)
 
 @router.get("/jobs/", response_model=List[JobRead], summary="List jobs (specific job families), optionally filtered by career or market trend")
 def list_jobs(trend: Optional[MarketTrend] = None, career_id: Optional[int] = None, db: Session = Depends(get_db)):

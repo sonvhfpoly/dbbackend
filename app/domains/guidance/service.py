@@ -9,7 +9,8 @@ from .repository import GuidanceRepository
 from .models import EducationPath
 from .schemas import EducationPathCreate
 from .anti_bias import AntiBiasEngine, RecommendationCandidate
-from .seed_data import SEED_EDUCATION_PATHS, SEED_STUDENT
+from .seed_data import SEED_EDUCATION_PATHS
+from domains.student.seed_data import SEED_STUDENTS
 from typing import List
 
 # Distinct from the chatbot domain's conversational persona: this prompt asks
@@ -88,9 +89,11 @@ class GuidanceService:
         ]
 
     def seed_demo_data(self):
-        """Populates a small education-path catalog and one demo student, so the
-        recommendation pipeline is exercisable end-to-end without depending on
-        the student domain's (not yet built) own router."""
+        """Populates a small education-path catalog and a handful of demo
+        students (with StudentSkill tags against the shared market skill
+        catalog), so the recommendation pipeline — and, downstream, any
+        profile/job skill matching — is exercisable end-to-end without
+        depending on the student domain's (not yet built) own router."""
         paths_created = 0
         for p in SEED_EDUCATION_PATHS:
             existing = self.db.query(EducationPath).filter(EducationPath.name == p["name"]).first()
@@ -98,16 +101,25 @@ class GuidanceService:
                 self.repo.create_path(dict(p))
                 paths_created += 1
 
-        student = self.student_repo.get_by_email(SEED_STUDENT["email"])
-        student_created = False
-        if student is None:
-            student = self.student_repo.create_student(dict(SEED_STUDENT))
-            student_created = True
+        students_created = 0
+        demo_student_id = None
+        for s in SEED_STUDENTS:
+            student = self.student_repo.get_by_email(s["email"])
+            if student is None:
+                student_data = {k: v for k, v in s.items() if k != "skills"}
+                student = self.student_repo.create_student(student_data)
+                students_created += 1
+            if demo_student_id is None:
+                demo_student_id = student.id  # first seed student, kept for backward-compat with callers relying on this key
+
+            for skill_name in s["skills"]:
+                skill = self.market_repo.get_or_create_skill(skill_name, category="general")
+                self.student_repo.associate_skill(student.id, skill.id)
 
         return {
             "education_paths_created": paths_created,
-            "demo_student_id": student.id,
-            "demo_student_created": student_created,
+            "demo_student_id": demo_student_id,
+            "students_seeded": students_created,
         }
 
     @staticmethod
