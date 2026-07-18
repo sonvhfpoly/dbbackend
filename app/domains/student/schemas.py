@@ -123,7 +123,10 @@ class CareerSkillRequirementRead(CareerSkillRequirementUpsert):
 
 class RecommendationGenerateRequest(BaseModel):
     limit: int = Field(default=5, ge=1, le=20)
-    persist: bool = True
+    persist: bool = Field(
+        default=True,
+        description="Upsert this fresh LLM result as the student's current recommendation set.",
+    )
 
 
 class StudentCareerRecommendationRead(BaseModel):
@@ -132,11 +135,13 @@ class StudentCareerRecommendationRead(BaseModel):
     id: int | None = None
     student_id: int
     career_id: int
+    career_title: str | None = None
     score: float
     rationale: str | None = None
     strengths: str | None = None
     gaps: str | None = None
     next_steps: str | None = None
-    generated_by: RecommendationGenerator = RecommendationGenerator.RULE_BASED_V1
+    generated_by: RecommendationGenerator = RecommendationGenerator.LLM_V1
     status: RecommendationStatus = RecommendationStatus.DRAFT
     created_at: datetime | None = None
+    updated_at: datetime | None = None

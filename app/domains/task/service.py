@@ -111,6 +111,9 @@ class TaskService:
 
         try:
             created = self.repo.create_task(data)
+        except ValueError as exc:
+            self.repo.db.rollback()
+            raise BusinessLogicException(str(exc)) from exc
         except IntegrityError as exc:
             # Safety net, not the primary fix: company_id is already resolved
             # to a real row above, so this should be rare in practice — but no
@@ -133,6 +136,13 @@ class TaskService:
         if task is None:
             raise EntityNotFoundException("Task", task_id)
         return task
+
+    def set_task_skills(self, task_id: int, skill_ids: List[int]):
+        task = self.get_task(task_id)
+        try:
+            return self.repo.set_task_skills(task, list(dict.fromkeys(skill_ids)))
+        except ValueError as exc:
+            raise BusinessLogicException(str(exc)) from exc
 
     def delete_task(self, task_id: int, force: bool = False) -> None:
         """Deletes a task. Evidence claims against it (or any of its
@@ -315,6 +325,7 @@ class TaskService:
                 "inputs": [],
                 "outputs": [],
                 "criteria": [],
+                "skill_ids": [skill.id for skill in getattr(task, "skills", [])],
             })
 
         # Points now roll up from the sub-tasks' own completed submissions
@@ -487,11 +498,12 @@ class TaskService:
             # the terminal step, so complete right away instead of leaving
             # the submission stranded at AUTO_CHECK_PASSED with no mentor
             # ever going to call the separate /complete endpoint on it.
-            return self.repo.update_submission(
+            completed = self.repo.update_submission(
                 submission_id, auto_check_result=result, status=SubmissionStatus.COMPLETED,
                 completed_by=CompletionActor.AI, points_awarded=task.competency_points,
                 completed_at=datetime.utcnow(),
             )
+            return completed
 
         return self.repo.update_submission(
             submission_id,
@@ -520,7 +532,7 @@ class TaskService:
         # is being called) — complete immediately instead of leaving the
         # submission at MENTOR_APPROVED waiting on a separate, easy-to-miss
         # /complete call that a caller may never make (see complete_submission).
-        return self.repo.update_submission(
+        completed = self.repo.update_submission(
             submission_id,
             mentor_feedback=feedback,
             mentor_decision_at=datetime.utcnow(),
@@ -529,6 +541,7 @@ class TaskService:
             points_awarded=task.competency_points,
             completed_at=datetime.utcnow(),
         )
+        return completed
 
     def score_criterion(self, submission_id: int, criterion_id: int, score_percent: int, feedback: Optional[str], scored_by: CompletionActor):
         submission = self._get_submission_or_404(submission_id)
@@ -563,13 +576,14 @@ class TaskService:
             expected = {SubmissionStatus.SUBMITTED}
         self._require_status(submission, expected)
 
-        return self.repo.update_submission(
+        completed = self.repo.update_submission(
             submission_id,
             status=SubmissionStatus.COMPLETED,
             completed_by=completed_by,
             points_awarded=task.competency_points,
             completed_at=datetime.utcnow(),
         )
+        return completed
 
     def get_submission(self, submission_id: int):
         return self._get_submission_or_404(submission_id)

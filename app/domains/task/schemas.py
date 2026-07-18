@@ -64,6 +64,16 @@ class TaskEvaluationCriterionRead(TaskEvaluationCriterionCreate):
     id: int
     model_config = ConfigDict(from_attributes=True)
 
+class TaskSkillRead(BaseModel):
+    id: int
+    name: str
+    category: str
+    description: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class SetTaskSkillsRequest(BaseModel):
+    skill_ids: List[int] = Field(default_factory=list)
+
 # ---- Task ----
 
 class TaskBase(BaseModel):
@@ -94,6 +104,10 @@ class TaskCreate(TaskBase):
     inputs: List[TaskInputCreate] = Field(default_factory=list)
     outputs: List[TaskOutputCreate] = Field(default_factory=list)
     criteria: List[TaskEvaluationCriterionCreate] = Field(default_factory=list)
+    skill_ids: List[int] = Field(
+        default_factory=list,
+        description="Existing market Skill ids exercised by this task.",
+    )
     skip_ai_planning: bool = Field(
         default=False,
         description="Skip the LLM call for T-level assessment and sub-task auto-splitting entirely — "
@@ -107,6 +121,7 @@ class TaskRead(TaskBase):
     inputs: List[TaskInputRead] = Field(default_factory=list)
     outputs: List[TaskOutputRead] = Field(default_factory=list)
     criteria: List[TaskEvaluationCriterionRead] = Field(default_factory=list)
+    skills: List[TaskSkillRead] = Field(default_factory=list)
     sub_tasks: List["TaskRead"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

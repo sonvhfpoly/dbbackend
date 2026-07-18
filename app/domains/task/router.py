@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from core.database import get_db
@@ -11,10 +11,21 @@ from .schemas import (
     TaskSubmissionRead, TaskSubmissionScoreRead, TaskProgressRead,
     TaskComplexity, TaskReviewRequest, TaskReviewRead, TaskReviewStatus,
     RegisterSubmissionFileRequest, TaskSubmissionFileRead,
+    SetTaskSkillsRequest,
 )
 from .service import TaskService
+from .models import SubmissionStatus
+from domains.student.background import refresh_career_recommendations
 
 router = APIRouter(prefix="/tasks", tags=["Task Marketplace"])
+
+
+def _schedule_career_refresh(background_tasks: BackgroundTasks, submission) -> None:
+    if submission.status == SubmissionStatus.COMPLETED:
+        background_tasks.add_task(
+            refresh_career_recommendations,
+            submission.student_id,
+        )
 
 @router.post("/companies", response_model=CompanyRead, summary="Register a company sponsoring tasks")
 def create_company(company: CompanyCreate, db: Session = Depends(get_db)):
@@ -70,6 +81,14 @@ def list_pending_approval_tasks(company_id: Optional[int] = None, db: Session = 
 @router.get("/{task_id}", response_model=TaskRead, summary="Get a task's detail, including its sub-tasks")
 def get_task(task_id: int, db: Session = Depends(get_db)):
     return TaskService(db).get_task(task_id)
+
+@router.put(
+    "/{task_id}/skills",
+    response_model=TaskRead,
+    summary="Replace the skills exercised by a task",
+)
+def set_task_skills(task_id: int, request: SetTaskSkillsRequest, db: Session = Depends(get_db)):
+    return TaskService(db).set_task_skills(task_id, request.skill_ids)
 
 @router.delete(
     "/{task_id}",
@@ -147,12 +166,25 @@ def list_submission_files(submission_id: int, db: Session = Depends(get_db)):
     return TaskService(db).list_submission_files(submission_id)
 
 @router.post("/submissions/{submission_id}/auto-check", response_model=TaskSubmissionRead, summary="Run the automated format/completeness check")
-def run_auto_check(submission_id: int, db: Session = Depends(get_db)):
-    return TaskService(db).run_auto_check(submission_id)
+def run_auto_check(
+    submission_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    submission = TaskService(db).run_auto_check(submission_id)
+    _schedule_career_refresh(background_tasks, submission)
+    return submission
 
 @router.post("/submissions/{submission_id}/mentor-review", response_model=TaskSubmissionRead, summary="Mentor approves or rejects the submission")
-def mentor_review(submission_id: int, request: MentorReviewRequest, db: Session = Depends(get_db)):
-    return TaskService(db).mentor_review(submission_id, request.approved, request.feedback)
+def mentor_review(
+    submission_id: int,
+    request: MentorReviewRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    submission = TaskService(db).mentor_review(submission_id, request.approved, request.feedback)
+    _schedule_career_refresh(background_tasks, submission)
+    return submission
 
 @router.post(
     "/submissions/{submission_id}/scores",
@@ -173,8 +205,15 @@ def list_scores(submission_id: int, db: Session = Depends(get_db)):
     summary="AI or mentor finalizes the submission and records competency points",
     description="Only valid once the required prior gate (auto-check and/or mentor approval, per the task's config) has passed.",
 )
-def complete_submission(submission_id: int, request: CompleteSubmissionRequest, db: Session = Depends(get_db)):
-    return TaskService(db).complete_submission(submission_id, request.completed_by)
+def complete_submission(
+    submission_id: int,
+    request: CompleteSubmissionRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    submission = TaskService(db).complete_submission(submission_id, request.completed_by)
+    _schedule_career_refresh(background_tasks, submission)
+    return submission
 
 @router.get("/submissions/{submission_id}", response_model=TaskSubmissionRead, summary="Get a submission's detail")
 def get_submission(submission_id: int, db: Session = Depends(get_db)):
