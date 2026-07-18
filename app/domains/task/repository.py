@@ -3,7 +3,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from .models import (
     Company, Task, TaskInput, TaskOutput, TaskEvaluationCriterion,
-    TaskSubmission, TaskSubmissionScore, TaskReview, TaskSubmissionFile,
+    TaskSubmission, TaskSubmissionScore, TaskReview, TaskSubmissionFile, TaskSkill,
 )
 
 class TaskRepository:
@@ -110,6 +110,18 @@ class TaskRepository:
         # place task/repository.py needs to reach into it.
         from domains.evidence.models import EvidenceClaim
         return self.db.query(EvidenceClaim).filter(EvidenceClaim.task_id == task_id).count()
+
+    # ---- Task <-> Skill linking ----
+
+    def get_task_skill_ids(self, task_id: int) -> List[int]:
+        return [
+            row[0] for row in
+            self.db.query(TaskSkill.skill_id).filter(TaskSkill.task_id == task_id).all()
+        ]
+
+    def link_task_skill(self, task_id: int, skill_id: int) -> None:
+        self.db.merge(TaskSkill(task_id=task_id, skill_id=skill_id))  # merge avoids dup on re-link
+        self.db.commit()
 
     # ---- Task review ----
 

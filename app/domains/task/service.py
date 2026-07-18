@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from core.exceptions import BusinessLogicException, EntityNotFoundException
 from domains.chatbot.service import ChatbotService
+from domains.market.repository import MarketRepository
 from .repository import TaskRepository
 from .models import SubmissionStatus, CompletionActor, Task, TaskReviewStatus, TaskRiskLevel, TaskComplexity
 from .schemas import CompanyCreate, TaskCreate
@@ -49,6 +50,21 @@ COMPLEXITY_ASSESSMENT_SYSTEM_PROMPT = (
 # is pending/unavailable — overwritten as soon as the assessment succeeds.
 DEFAULT_COMPLEXITY = TaskComplexity.T1
 
+# Populates TaskSkill right after task creation, so completion time (see
+# TaskService._draft_evidence_for_completion) already knows which skill(s) to
+# draft evidence for instead of requiring someone to remember to record that
+# link by hand. Matching by name lets the model reuse an existing catalog
+# entry via get_or_create_skill without needing to know its id.
+SKILL_LINKING_SYSTEM_PROMPT = (
+    "You identify which skill(s) a practical task for a student career-guidance "
+    "platform is meant to build. Given the task's title and context, and a list of "
+    "already-known skill names, choose skill names that best describe what this task "
+    "teaches — reuse an existing name from the list whenever it fits (spelled exactly "
+    "as given), and only propose a new skill name when none of the existing ones fit. "
+    "Respond with ONLY a JSON object, no prose, no markdown code fences, in exactly "
+    "this shape: {\"skills\": [\"<name>\", ...]}. Return 1-3 skills, never zero."
+)
+
 # Lazily created (see TaskService.resolve_company_id) the first time a task
 # is created with a missing or unregistered company_id, so task creation
 # never hard-fails on a bad FK — matched by slug, same idempotent pattern as
@@ -61,7 +77,9 @@ PLACEHOLDER_COMPANY = {
 
 class TaskService:
     def __init__(self, db: Session):
+        self.db = db
         self.repo = TaskRepository(db)
+        self.market_repo = MarketRepository(db)
         self.chatbot = ChatbotService()
 
     # ---- Company ----
@@ -125,6 +143,15 @@ class TaskService:
         if is_root:
             self._ai_plan_subtasks(created, override_complexity=complexity_unset, skip=skip_ai_planning)
             created = self.repo.get_task(created.id)
+            if not self.repo.get_sub_tasks(created.id):
+                # Stayed a flat leaf task (no split happened) — it's the unit
+                # students actually complete, so link skills directly to it.
+                # A root that DID split is a container (see
+                # guidance/service.py._open_unstarted_leaf_tasks); its
+                # sub-tasks get linked individually inside _ai_plan_subtasks.
+                self._ai_link_skills(created, skip=skip_ai_planning)
+        else:
+            self._ai_link_skills(created, skip=skip_ai_planning)
 
         return created
 
@@ -293,7 +320,7 @@ class TaskService:
             if not isinstance(sub, dict) or not sub.get("title"):
                 continue
             hours_min = sub.get("estimated_hours_min") or 1
-            self.repo.create_task({
+            created_sub = self.repo.create_task({
                 "title": sub["title"],
                 "complexity_level": self._coerce_complexity(sub.get("complexity_level"), fallback=task.complexity_level),
                 "company_id": task.company_id,
@@ -316,10 +343,47 @@ class TaskService:
                 "outputs": [],
                 "criteria": [],
             })
+            # Sub-tasks are the actual joinable/completable unit here, so they
+            # (not the root that just split) are what need a skill link.
+            self._ai_link_skills(created_sub)
 
         # Points now roll up from the sub-tasks' own completed submissions
         # (see get_task_progress) — the parent's own static value is stale.
         self.repo.update_task(task.id, competency_points=None)
+
+    def _ai_link_skills(self, task: Task, skip: bool = False) -> None:
+        """Best-effort, same convention as _ai_plan_subtasks: any failure
+        (missing market_repo on a test double, unreachable provider,
+        unparseable reply) is swallowed — this is an enhancement on top of
+        task creation, not a requirement for it to succeed."""
+        if skip:
+            return
+        try:
+            existing_names = [s.name for s in self.market_repo.list_skills(limit=200)]
+            raw_reply = self.chatbot.complete([
+                {"role": "system", "content": SKILL_LINKING_SYSTEM_PROMPT},
+                {"role": "user", "content": self._build_skill_linking_prompt(task, existing_names)},
+            ])
+            plan = self._parse_planning_output(raw_reply)
+        except Exception:
+            return
+
+        names = plan.get("skills")
+        if not isinstance(names, list):
+            return
+        for name in names:
+            if not isinstance(name, str) or not name.strip():
+                continue
+            skill = self.market_repo.get_or_create_skill(name.strip(), category="general")
+            self.repo.link_task_skill(task.id, skill.id)
+
+    @staticmethod
+    def _build_skill_linking_prompt(task: Task, existing_skill_names: List[str]) -> str:
+        return (
+            f"Task title: {task.title}\n"
+            f"Context: {task.context}\n"
+            f"Known skills: {existing_skill_names}\n"
+        )
 
     def _ai_assess_complexity(self, data: dict) -> Optional[TaskComplexity]:
         """Best-effort complexity-only assessment for tasks that don't go
@@ -516,13 +580,53 @@ class TaskService:
             expected = {SubmissionStatus.SUBMITTED}
         self._require_status(submission, expected)
 
-        return self.repo.update_submission(
+        completed = self.repo.update_submission(
             submission_id,
             status=SubmissionStatus.COMPLETED,
             completed_by=completed_by,
             points_awarded=task.competency_points,
             completed_at=datetime.utcnow(),
         )
+        self._draft_evidence_for_completion(completed, task)
+        return completed
+
+    def _draft_evidence_for_completion(self, submission, task: Task) -> None:
+        """Best-effort: for each skill this task is linked to (see
+        _ai_link_skills), auto-create an AI_DRAFT EvidenceClaim so nobody has
+        to remember to create one manually after completion. proposed_skill_level
+        is the task's own target_evidence_level — already defined as exactly
+        "the skill level this task is meant to produce evidence for" (see
+        Task.target_evidence_level). Still goes through the full
+        AI_DRAFT -> STUDENT_REVIEWED -> PENDING_MENTOR -> VERIFIED chain
+        unchanged; nothing here touches StudentSkillProfile directly."""
+        try:
+            skill_ids = self.repo.get_task_skill_ids(task.id)
+        except Exception:
+            return
+        if not skill_ids:
+            return
+
+        # Lazy import: evidence depends on task (EvidenceService imports
+        # TaskRepository), so importing at module level here would cycle —
+        # same convention as TaskRepository.count_evidence_claims_for_task.
+        from domains.evidence.service import EvidenceService
+        from domains.evidence.schemas import EvidenceClaimCreate
+        evidence_service = EvidenceService(self.db)
+        for skill_id in skill_ids:
+            try:
+                evidence_service.create_claim(EvidenceClaimCreate(
+                    student_id=submission.student_id,
+                    skill_id=skill_id,
+                    task_id=task.id,
+                    claim=f"Completed task '{task.title}'",
+                    task_complexity=task.complexity_level.value,
+                    risk_level=task.risk_level.value,
+                    proposed_skill_level=task.target_evidence_level.value,
+                ))
+            except Exception:
+                # One skill's claim failing shouldn't block the others or the
+                # completion itself — same best-effort convention as _ai_plan_subtasks.
+                continue
 
     def get_submission(self, submission_id: int):
         return self._get_submission_or_404(submission_id)

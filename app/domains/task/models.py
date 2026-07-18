@@ -110,6 +110,10 @@ class Task(Base):
     # backend gate is tied to them (no Work Session/progress tracking in MVP).
     checkpoints: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Optional deadline a business can attach to a task; display-only in this
+    # MVP, same as checkpoints above — no backend gate is tied to it.
+    deadline: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     # T-level / R-level / target skill level as proposed by the business or AI
     # at creation time; a mentor review (see TaskReview below) can override
@@ -167,6 +171,18 @@ class TaskEvaluationCriterion(Base):
     weight_percent: Mapped[int] = mapped_column(Integer)
 
     task = relationship("Task", back_populates="criteria")
+
+class TaskSkill(Base):
+    """Which skill(s) a Task builds — populated by AI right after task
+    creation (see TaskService._ai_link_skills) and read back at completion
+    time to know which skill(s) to draft evidence for (see
+    TaskService._draft_evidence_for_completion). Not a FK-backed
+    relationship() on Task: nothing currently needs to load it eagerly
+    alongside a Task the way inputs/outputs/criteria do."""
+    __tablename__ = "task_skills"
+
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    skill_id: Mapped[int] = mapped_column(ForeignKey("skills.id"), primary_key=True)
 
 class TaskReview(Base):
     """One mentor decision on a Task itself — approve/reject/request-more-info
