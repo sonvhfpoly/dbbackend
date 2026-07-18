@@ -64,8 +64,9 @@ class TaskBuilderService:
 
     # ---- Conversation turns ----
 
-    def start_conversation(self, company_id: int, created_by: str, message: str) -> dict:
-        conversation = self.repo.create_conversation(company_id, created_by)
+    def start_conversation(self, company_id: Optional[int], created_by: str, message: str) -> dict:
+        resolved_company_id = self.task_service.resolve_company_id(company_id)
+        conversation = self.repo.create_conversation(resolved_company_id, created_by)
         self.repo.add_message(conversation.id, MessageRole.ENTERPRISE, message)
         return self._run_ai_turn(conversation.id)
 

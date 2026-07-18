@@ -8,10 +8,12 @@ from domains.task_builder.models import ConversationStatus, MessageRole
 def make_service(repo=None, task_service=None, chatbot=None):
     """TaskBuilderService.__init__ opens a real DB session — bypass it and
     inject fakes directly, so this stays a pure-logic test (same pattern as
-    test_task_service.py)."""
+    test_task_service.py). task_service defaults to a fresh FakeTaskService so
+    tests that don't care about task creation (most of the start_conversation
+    ones) don't each need to pass one just to satisfy resolve_company_id."""
     service = object.__new__(TaskBuilderService)
     service.repo = repo
-    service.task_service = task_service
+    service.task_service = task_service if task_service is not None else FakeTaskService()
     service.chatbot = chatbot
     return service
 
@@ -37,10 +39,14 @@ class FakeChatbot:
 class FakeTaskService:
     """Stands in for domains.task.service.TaskService — generate_task now
     delegates task creation to it (with skip_ai_planning=True) instead of
-    calling TaskRepository directly."""
+    calling TaskRepository directly, and start_conversation calls
+    resolve_company_id before creating the TBConversation."""
     def __init__(self):
         self.created = []
         self._next_id = 500
+
+    def resolve_company_id(self, company_id):
+        return company_id if company_id is not None else 999  # 999 = fake placeholder id
 
     def create_task(self, task_create):
         self._next_id += 1
@@ -176,6 +182,19 @@ def test_ai_turn_requests_json_mode_from_provider():
     service.start_conversation(company_id=1, created_by="u1", message="hello")
 
     assert chatbot.calls == [True]  # json_mode=True, no retry needed
+
+def test_start_conversation_resolves_missing_company_id_instead_of_failing():
+    """Regression test: starting a conversation without a company_id (or with
+    one that isn't registered) must not hard-fail — it resolves to a
+    placeholder company via TaskService.resolve_company_id."""
+    repo = FakeTBRepo()
+    reply = '{"status": "collecting", "reply": "OK", "open_questions": [], "proposed_versions": []}'
+    service = make_service(repo=repo, chatbot=FakeChatbot(reply))
+
+    result = service.start_conversation(company_id=None, created_by="u1", message="hello")
+
+    conv = repo.get_conversation(result["conversation_id"])
+    assert conv.company_id == 999  # placeholder, not None and not an error
 
 # ---- open questions (read-only) ----
 
