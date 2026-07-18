@@ -17,14 +17,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "task_skills",
-        sa.Column("task_id", sa.Integer(), nullable=False),
-        sa.Column("skill_id", sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(["skill_id"], ["skills.id"]),
-        sa.ForeignKeyConstraint(["task_id"], ["tasks.id"]),
-        sa.PrimaryKeyConstraint("task_id", "skill_id"),
-    )
+    # AUTO_CREATE_SCHEMA's create_all() may have already created this table
+    # (additive dev/demo fallback in main.py, races ahead of Alembic on a
+    # fresh process start) — guard so upgrade() stays re-runnable either way.
+    bind = op.get_bind()
+    if not sa.inspect(bind).has_table("task_skills"):
+        op.create_table(
+            "task_skills",
+            sa.Column("task_id", sa.Integer(), nullable=False),
+            sa.Column("skill_id", sa.Integer(), nullable=False),
+            sa.ForeignKeyConstraint(["skill_id"], ["skills.id"]),
+            sa.ForeignKeyConstraint(["task_id"], ["tasks.id"]),
+            sa.PrimaryKeyConstraint("task_id", "skill_id"),
+        )
 
     op.add_column(
         "student_career_recommendations",
