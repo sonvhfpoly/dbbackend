@@ -14,6 +14,13 @@ class TBConversationCreate(BaseModel):
 
 class TBMessageCreate(BaseModel):
     message: str
+    confirm: bool = Field(
+        default=False,
+        description="Enterprise explicitly confirms creating the task now, even with incomplete "
+                    "details — the AI stops asking clarifying questions and proposes a version "
+                    "immediately, filling any gaps with reasonable defaults instead of requiring a "
+                    "fully-detailed brief.",
+    )
 
 class ProposedVersion(BaseModel):
     version_label: str = Field(description="e.g. 'L1', 'L2' — matched against generate-task's selected_version")

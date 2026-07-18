@@ -207,6 +207,46 @@ def test_ai_turn_forces_finalize_after_max_clarifying_questions():
     # The instruction wasn't present yet for the first 3 rounds, only once the cap is reached.
     assert any(m["content"] == QUESTION_LIMIT_INSTRUCTION for m in ai_messages)
 
+def test_add_message_with_confirm_forces_finalize_instruction():
+    """Regression test: an enterprise confirming early (confirm=True) must get
+    USER_CONFIRMED_INSTRUCTION injected immediately, even on the very first
+    reply — they shouldn't have to wait for MAX_CLARIFYING_QUESTIONS rounds."""
+    from domains.task_builder.service import USER_CONFIRMED_INSTRUCTION
+
+    repo = FakeTBRepo()
+    conv = make_conversation(repo, status=ConversationStatus.COLLECTING)
+    repo.add_message(conv.id, MessageRole.AI, "question 0", open_questions=["q0"], proposed_versions=[])
+    valid = '{"status": "ready", "reply": "OK", "open_questions": [], "proposed_versions": [' + json.dumps(VERSION_L1) + ']}'
+    chatbot = FakeChatbot(valid)
+    service = make_service(repo=repo, chatbot=chatbot)
+
+    result = service.add_message(conv.id, "tạo task luôn đi", confirm=True)
+
+    assert result["status"] == ConversationStatus.READY
+    ai_messages = service._build_ai_messages(repo.get_conversation(conv.id), force_finalize=True)
+    assert any(m["content"] == USER_CONFIRMED_INSTRUCTION for m in ai_messages)
+
+def test_generate_task_fills_missing_optional_fields_with_defaults():
+    """A confirmed/incomplete proposal (missing complexity_level/hours/points,
+    but title+context present) must still create a task instead of blocking —
+    the whole point of confirm=True is not requiring a fully-detailed brief."""
+    repo = FakeTBRepo()
+    incomplete = dict(VERSION_L1)
+    for field in ("complexity_level", "estimated_hours_min", "estimated_hours_max", "competency_points"):
+        incomplete.pop(field)
+    conv = make_conversation(repo, status=ConversationStatus.READY, proposed_versions=[incomplete])
+    task_service = FakeTaskService()
+    service = make_service(repo=repo, task_service=task_service)
+
+    result = service.generate_task(conv.id, "L1")
+
+    created = task_service.created[0]
+    assert created.complexity_level.value == "T1"
+    assert created.estimated_hours_min == 1
+    assert created.estimated_hours_max == 4
+    assert created.competency_points == 10
+    assert result["status"] == ConversationStatus.TASK_CREATED
+
 def test_build_ai_messages_omits_question_limit_instruction_before_cap():
     repo = FakeTBRepo()
     conv = repo.create_conversation(company_id=1, created_by="u1")

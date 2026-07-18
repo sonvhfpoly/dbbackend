@@ -50,6 +50,19 @@ REQUIRED_VERSION_FIELDS = [
     "title", "context", "complexity_level", "estimated_hours_min", "estimated_hours_max", "competency_points",
 ]
 
+# Applied in generate_task for any of these fields the AI still left blank —
+# e.g. after a confirm=True force-finalize, or a model that didn't fully obey
+# the "fill gaps yourself" instruction. Keeps task creation from being blocked
+# by an incomplete brief; only title/context (which can't be sensibly
+# defaulted) remain hard requirements. Same fallback values already used for
+# AI-planned sub-tasks in domains/task/service.py's _ai_plan_subtasks.
+VERSION_FIELD_DEFAULTS = {
+    "complexity_level": "T1",
+    "estimated_hours_min": 1,
+    "estimated_hours_max": 4,
+    "competency_points": 10,
+}
+
 # Sent back to the model when its reply couldn't be parsed as JSON, asking it
 # to try again in the same turn — see _complete_and_parse.
 JSON_RETRY_INSTRUCTION = (
@@ -71,6 +84,18 @@ QUESTION_LIMIT_INSTRUCTION = (
     "một vài chi tiết chưa rõ."
 )
 
+# Injected when the enterprise explicitly confirms (TBMessageCreate.confirm) —
+# distinct from QUESTION_LIMIT_INSTRUCTION since this can fire well before the
+# round cap, e.g. right after the first answer. Lets the enterprise skip ahead
+# without having to first supply a fully-detailed brief/document.
+USER_CONFIRMED_INSTRUCTION = (
+    "Enterprise đã xác nhận muốn tạo task ngay bây giờ, dù thông tin có thể chưa đầy đủ. "
+    "KHÔNG được hỏi thêm câu nào nữa — hãy đề xuất ngay 1-3 phiên bản task "
+    "(status=\"ready\", open_questions=[]) dựa trên toàn bộ thông tin đã có trong cuộc hội "
+    "thoại; với bất kỳ chi tiết nào còn thiếu (giờ ước tính, điểm năng lực, v.v.), hãy tự "
+    "suy luận một giá trị hợp lý thay vì để trống hoặc hỏi thêm."
+)
+
 
 class TaskBuilderService:
     def __init__(self, db: Session):
@@ -87,14 +112,14 @@ class TaskBuilderService:
         self.repo.add_message(conversation.id, MessageRole.ENTERPRISE, message)
         return self._run_ai_turn(conversation.id)
 
-    def add_message(self, conversation_id: int, message: str) -> dict:
+    def add_message(self, conversation_id: int, message: str, confirm: bool = False) -> dict:
         self._get_conversation_or_404(conversation_id)
         self.repo.add_message(conversation_id, MessageRole.ENTERPRISE, message)
-        return self._run_ai_turn(conversation_id)
+        return self._run_ai_turn(conversation_id, force_finalize=confirm)
 
-    def _run_ai_turn(self, conversation_id: int) -> dict:
+    def _run_ai_turn(self, conversation_id: int, force_finalize: bool = False) -> dict:
         conversation = self._get_conversation_or_404(conversation_id)
-        ai_messages = self._build_ai_messages(conversation)
+        ai_messages = self._build_ai_messages(conversation, force_finalize=force_finalize)
         parsed = self._complete_and_parse(ai_messages)
 
         if parsed is None:
@@ -157,7 +182,7 @@ class TaskBuilderService:
         except BusinessLogicException:
             return None
 
-    def _build_ai_messages(self, conversation: TBConversation) -> List[dict]:
+    def _build_ai_messages(self, conversation: TBConversation, force_finalize: bool = False) -> List[dict]:
         messages = [{"role": "system", "content": TASK_BUILDER_SYSTEM_PROMPT}]
         for doc in conversation.documents:
             if doc.extracted_text:
@@ -171,7 +196,9 @@ class TaskBuilderService:
         for msg in conversation.messages:
             role = "assistant" if msg.role == MessageRole.AI else "user"
             messages.append({"role": role, "content": msg.content})
-        if self._clarifying_questions_asked(conversation) >= MAX_CLARIFYING_QUESTIONS:
+        if force_finalize:
+            messages.append({"role": "user", "content": USER_CONFIRMED_INSTRUCTION})
+        elif self._clarifying_questions_asked(conversation) >= MAX_CLARIFYING_QUESTIONS:
             messages.append({"role": "user", "content": QUESTION_LIMIT_INSTRUCTION})
         return messages
 
@@ -238,6 +265,10 @@ class TaskBuilderService:
             raise BusinessLogicException(
                 f"Version '{selected_version}' not found in the latest proposal (available: {available})"
             )
+
+        for field, default in VERSION_FIELD_DEFAULTS.items():
+            if version.get(field) is None:
+                version[field] = default
 
         missing = [f for f in REQUIRED_VERSION_FIELDS if version.get(f) is None]
         if missing:

@@ -26,7 +26,7 @@ def start_conversation(request: TBConversationCreate, db: Session = Depends(get_
 )
 def add_message(conversation_id: int, request: TBMessageCreate, db: Session = Depends(get_db)):
     service = TaskBuilderService(db)
-    return service.add_message(conversation_id, request.message)
+    return service.add_message(conversation_id, request.message, confirm=request.confirm)
 
 @router.post(
     "/conversations/{conversation_id}/documents",
