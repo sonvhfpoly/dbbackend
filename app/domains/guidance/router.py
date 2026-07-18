@@ -25,8 +25,8 @@ def list_paths(db: Session = Depends(get_db)):
     "/students/{student_id}/recommendations",
     response_model=List[TaskRecommendationRead],
     summary="Recommend the student's next open Task toward a target Job",
-    description="Compares the student's known skills (StudentSkill / StudentSkillProfile) against the "
-                "target Job's required skill set (JobSkill) to gauge readiness, then picks open "
+    description="Compares the student's known skills (StudentSkillProfile, backed by verified evidence) "
+                "against the target Job's required skill set (JobSkill) to gauge readiness, then picks open "
                 "(mentor-approved, not-yet-started) leaf Tasks at a matching complexity level. Falls back "
                 "to an LLM-picked starter set when there's no skill signal to compute a match from (a "
                 "brand-new student, or a Job with no configured required skills). Not persisted — call "

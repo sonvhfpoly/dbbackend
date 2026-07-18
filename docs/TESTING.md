@@ -19,19 +19,23 @@ Không cần chạy `alembic upgrade head` trước — `AUTO_CREATE_SCHEMA=true
 uv run --project .. pytest -q
 ```
 
-121 test hiện có, chia theo file:
+146 test hiện có, chia theo file:
 
 | File | Domain | Nội dung |
 |---|---|---|
-| `test_market_service.py` | market | Ingestion, trend calculation, skill/job resolution |
-| `test_anti_bias.py` | guidance | `DiversityValidator`/`RegionExpansionValidator` |
-| `test_task_service.py` | task | AI complexity/sub-task planning, nesting depth, progress rollup, `skip_ai_planning` |
-| `test_task_review.py` | task | Risk-level gate (R2/R3 chặn APPROVED), `join_task` yêu cầu `APPROVED` |
-| `test_task_submission_extras.py` | task | `elapsed_seconds`, `student_reflection`, giới hạn file upload |
-| `test_task_builder_service.py` | task_builder | AI turn parsing, giới hạn 3 câu hỏi, `confirm`, `generate_task` (qua `TaskService.create_task(skip_ai_planning=False)`, có thể tự tách sub-task) |
-| `test_evidence_service.py` | evidence | State machine `AI_DRAFT→...→VERIFIED`, cập nhật skill profile chỉ khi `VERIFIED` |
+| `unit/test_market_service.py` | market | Ingestion, trend calculation, skill/job resolution |
+| `unit/test_anti_bias.py` | guidance | `DiversityValidator`/`RegionExpansionValidator` |
+| `unit/test_task_service.py` | task | AI complexity/sub-task planning, nesting depth, progress rollup, `skip_ai_planning` |
+| `unit/test_task_review.py` | task | Risk-level gate (R2/R3 chặn APPROVED), `join_task` yêu cầu `APPROVED` |
+| `unit/test_task_submission_extras.py` | task | `elapsed_seconds`, `student_reflection`, giới hạn file upload |
+| `unit/test_task_builder_service.py` | task_builder | AI turn parsing, giới hạn 3 câu hỏi, `confirm`, `generate_task` (qua `TaskService.create_task(skip_ai_planning=False)`, có thể tự tách sub-task) |
+| `unit/test_evidence_service.py` | evidence | State machine `AI_DRAFT→...→VERIFIED`, cập nhật skill profile chỉ khi `VERIFIED` |
+| `integration/test_task_review_integration.py` | task | Duyệt task gốc lan truyền `review_status` xuống sub-task (mock DB, SQLite in-memory) |
+| `integration/test_task_skill_evidence.py` | task, evidence | `TaskSkill` auto-link lúc tạo task (AI), auto-draft `EvidenceClaim` lúc hoàn thành submission (`_draft_evidence_for_completion`), best-effort khi AI/skill lỗi |
+| `integration/test_guidance_task_recommendation.py` | guidance | Gợi ý Task tiếp theo theo target Job — so khớp `StudentSkillProfile` vs `JobSkill`, fallback LLM khi cold-start |
+| `integration/test_student_career_recommendations.py` | student | Career recommendation chỉ tin `StudentSkillProfile` (evidence đã `VERIFIED`) làm skill signal, từ chối khi có task hoàn thành nhưng chưa skill nào được xác thực; background refresh sau khi submission `COMPLETED` |
 
-Toàn bộ dùng pattern bypass DB session: `object.__new__(Service)` rồi gán `.repo`/`.chatbot` là fake object — test logic thuần, không cần DB/LLM thật. Xem code các file trên để viết test tương tự cho domain mới.
+Test `unit/*` dùng pattern bypass DB session: `object.__new__(Service)` rồi gán `.repo`/`.chatbot` là fake object — test logic thuần, không cần DB thật. Test `integration/*` dùng SQLite in-memory thật (`create_engine("sqlite:///:memory:")` + `Base.metadata.create_all()`) khi logic trải dài nhiều domain/repository thật (task↔evidence↔student). Xem code các file trên để viết test tương tự cho domain mới.
 
 ## 2. Market + Guidance (end-to-end)
 
@@ -49,18 +53,22 @@ curl "http://127.0.0.1:8000/market/overview?days=30"  # stat card, chart tuần,
 curl "http://127.0.0.1:8000/market/analytics/skill-trend?window_days=30"
 ```
 
-Sinh đề xuất (ghi lại `demo_student_id` từ response seed guidance):
+Sinh đề xuất — gợi ý **Task tiếp theo** hướng tới 1 target Job (không còn gợi ý `EducationPath`, xem [ARCHITECTURE.md §2](ARCHITECTURE.md#2-bản-đồ-domain-hiện-tại)). Cần `target_job_id` thật (bắt buộc, không có default) — lấy từ `GET /market/jobs/`, và `demo_student_id` từ response seed guidance:
 ```bash
-curl -X POST "http://127.0.0.1:8000/guidance/students/<demo_student_id>/recommendations?count=3"
+JOB_ID=<lấy từ GET /market/jobs/>
+curl -X POST "http://127.0.0.1:8000/guidance/students/<demo_student_id>/recommendations?target_job_id=$JOB_ID&count=3"
 ```
 
-**Kỳ vọng**: mỗi recommendation có `reasoning_explanation` không rỗng, `path_id` nằm trong catalog đã seed, không đọc như một chỉ định bắt buộc. Đối chiếu nội dung giải thích với `market_trend` thật ở bước trên — đây là bằng chứng dữ liệu market thực sự chảy vào quyết định tư vấn.
+**Kỳ vọng**: response là `List[TaskRecommendationRead]` (`task_id`, `title`, `complexity_level`, `target_evidence_level`, `competency_points`, `company_id`, `reasoning_explanation`) — **không** có `id`/`path_id`/`created_at` (không persist, gọi lại bất cứ lúc nào để có gợi ý mới). Mỗi item có `reasoning_explanation` không rỗng. Sinh viên demo (seed qua evidence chain thật — xem [DATA_MODEL.md](DATA_MODEL.md#studentskillprofile-là-nguồn-known-skill-duy-nhất)) chưa có `StudentSkillProfile` khớp job nào sẽ rơi vào nhánh fallback LLM (cold-start).
+
+`GET /guidance/students/{id}/recommendations` (không đổi shape, vẫn `List[RecommendationRead]`/`EducationPath`) giờ chỉ còn tính lịch sử — vì POST ở trên không còn persist, endpoint này sẽ không bao giờ thấy dữ liệu mới sau thay đổi này.
 
 ### Checklist
 - [ ] `market_trend` của ít nhất 1 career/job khác `STABLE`
 - [ ] `skill-trend` có ít nhất 1 skill với `growth_rate` khác `null`
-- [ ] Mỗi recommendation có `reasoning_explanation`, không có recommendation nào toàn cùng 1 `PathType` (anti-bias hoạt động)
-- [ ] `pytest app/tests/unit/test_anti_bias.py app/tests/unit/test_market_service.py` pass
+- [ ] Thiếu `target_job_id` ở POST recommendations → `422`
+- [ ] Mỗi recommendation có `reasoning_explanation`, task trả về đang `review_status=APPROVED` và học sinh chưa từng `join`
+- [ ] `pytest app/tests/unit/test_anti_bias.py app/tests/unit/test_market_service.py app/tests/integration/test_guidance_task_recommendation.py` pass
 
 ## 3. Task Marketplace + Task Review
 
@@ -266,6 +274,27 @@ Gọi sai thứ tự (vd. `submit-to-mentor` khi còn `AI_DRAFT`) → `400` kèm
 - [ ] Chỉ `VERIFIED` mới tạo skill event mới; `REJECTED`/`NEED_MORE_EVIDENCE` không đụng skill profile
 - [ ] Gọi sai thứ tự state machine → `400`
 - [ ] `pytest app/tests/unit/test_evidence_service.py` pass
+
+### 5.1 Evidence tự động khi hoàn thành task, và career recommendation (domain `student`)
+
+Nếu task ở mục 3 có link `TaskSkill` (tự động lúc tạo, hoặc thủ công qua `PUT /tasks/{id}/skills`), bước `complete` (hoặc `mentor-review` approve, hoặc `auto-check` khi task không cần mentor) tự tạo sẵn 1 `EvidenceClaim` `AI_DRAFT` cho mỗi skill đó — không cần tự `POST /evidence/` nữa cho các skill đã khai báo trên task:
+```bash
+curl http://127.0.0.1:8000/evidence/students/$STUDENT   # đã thấy claim AI_DRAFT xuất hiện ngay sau /complete
+```
+Claim này vẫn phải tự đi `student-review` → `submit-to-mentor` → `mentor-decision` như bình thường — không có gì tự `VERIFIED`.
+
+Mỗi lần 1 submission chuyển sang `COMPLETED` (bất kỳ trong 3 đường ở mục 3), server tự lên lịch (`BackgroundTasks`) chạy `refresh_career_recommendations` — gọi LLM xếp hạng lại nghề nghiệp phù hợp cho student đó, `persist=true`. Tín hiệu skill đưa vào prompt chỉ lấy từ `StudentSkillProfile` đã `VERIFIED` — task hoàn thành mà chưa evidence nào được mentor xác nhận thì recommendation sẽ từ chối tạo (`400`, tiếng Việt: "chưa có kỹ năng nào được xác thực"):
+```bash
+curl -X POST http://127.0.0.1:8000/students/$STUDENT/career-recommendations/generate -d '{"limit": 5, "persist": true}'
+curl http://127.0.0.1:8000/students/$STUDENT/career-recommendations
+```
+**Kỳ vọng**: gọi `generate` trước khi có `StudentSkillProfile` nào (chỉ có task `COMPLETED`, chưa evidence `VERIFIED`) → `400`; sau khi ít nhất 1 evidence đã `VERIFIED` → `200`, mỗi recommendation có `rationale`/`strengths`/`gaps`/`next_steps`; gọi `generate` lần 2 cho cùng student/career → cập nhật row cũ (`score` mới) thay vì tạo thêm dòng trùng.
+
+### Checklist (5.1)
+- [ ] `/complete`, `/mentor-review` (approve), `/auto-check` (auto-complete) đều tự tạo `EvidenceClaim AI_DRAFT` cho skill đã link trên task
+- [ ] `career-recommendations/generate` khi chưa có `StudentSkillProfile` nào → `400`
+- [ ] Sau khi có ít nhất 1 skill `VERIFIED` → `generate` thành công, gọi lại không tạo trùng recommendation cho cùng 1 career
+- [ ] `pytest app/tests/integration/test_task_skill_evidence.py app/tests/integration/test_student_career_recommendations.py` pass
 
 ## 6. ePortfolio
 

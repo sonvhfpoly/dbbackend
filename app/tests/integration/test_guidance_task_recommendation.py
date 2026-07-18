@@ -3,7 +3,7 @@ behavior: recommend the student's next open Task toward a target Job (skill
 gap vs JobSkill), instead of persisting an EducationPath pick. Uses a real
 in-memory SQLite DB + real repositories (same pattern as
 tests/integration/test_task_review_integration.py) since the service queries
-StudentSkill/StudentSkillProfile directly via self.db.query(...)."""
+StudentSkillProfile directly via self.db.query(...)."""
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -15,7 +15,7 @@ from domains.guidance.repository import GuidanceRepository
 from domains.guidance.service import GuidanceService
 from domains.market.repository import MarketRepository
 from domains.student.repository import StudentRepository
-from domains.student.models import StudentSkill, StudentSkillProfile
+from domains.student.models import StudentSkillProfile
 from domains.task.repository import TaskRepository
 from domains.task.models import TaskComplexity, TaskReviewStatus
 

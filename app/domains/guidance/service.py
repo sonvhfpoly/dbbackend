@@ -2,11 +2,15 @@ import json
 from sqlalchemy.orm import Session
 from core.exceptions import BusinessLogicException, EntityNotFoundException
 from domains.student.repository import StudentRepository
-from domains.student.models import Student, StudentSkill, StudentSkillProfile
+from domains.student.models import Student, StudentSkillProfile
 from domains.market.repository import MarketRepository
 from domains.chatbot.service import ChatbotService
 from domains.task.repository import TaskRepository
+from domains.task.service import TaskService
 from domains.task.models import Task, TaskComplexity, TaskReviewStatus
+from domains.evidence.service import EvidenceService
+from domains.evidence.schemas import EvidenceClaimCreate
+from domains.evidence.models import EvidenceStatus
 from .repository import GuidanceRepository
 from .models import EducationPath
 from .schemas import EducationPathCreate
@@ -64,9 +68,11 @@ class GuidanceService:
 
     def generate_recommendations(self, student_id: int, target_job_id: int, count: int = 3) -> List[dict]:
         """Recommends the student's next open Task toward a target Job, by
-        comparing their known skills (StudentSkill / StudentSkillProfile)
-        against the Job's required skill set (JobSkill) — not persisted, so
-        callers get a fresh recommendation on every call."""
+        comparing their known skills (StudentSkillProfile — the only skill
+        representation backed by the evidence-verification pipeline, see
+        EvidenceService.mentor_decide) against the Job's required skill set
+        (JobSkill) — not persisted, so callers get a fresh recommendation on
+        every call."""
         student = self.student_repo.get_student(student_id)
         if student is None:
             raise EntityNotFoundException("Student", student_id)
@@ -124,15 +130,13 @@ class GuidanceService:
         return [t for t in open_leaves if t.id not in started_task_ids]
 
     def _known_skill_ids(self, student_id: int) -> set:
-        known = {
-            row.skill_id for row in
-            self.db.query(StudentSkill.skill_id).filter(StudentSkill.student_id == student_id).all()
-        }
-        known |= {
+        # StudentSkillProfile is the only skill representation that's actually
+        # backed by verified evidence (see EvidenceService._apply_to_skill_profile)
+        # — it's the sole source of truth here, not some other unverified tag.
+        return {
             row.skill_id for row in
             self.db.query(StudentSkillProfile.skill_id).filter(StudentSkillProfile.student_id == student_id).all()
         }
-        return known
 
     @staticmethod
     def _complexity_for_match_ratio(match_ratio: float) -> TaskComplexity:
@@ -199,16 +203,23 @@ class GuidanceService:
 
     def seed_demo_data(self):
         """Populates a small education-path catalog and a handful of demo
-        students (with StudentSkill tags against the shared market skill
-        catalog), so the recommendation pipeline — and, downstream, any
-        profile/job skill matching — is exercisable end-to-end without
-        depending on the student domain's (not yet built) own router."""
+        students, with each student's seed skills recorded through the real
+        evidence pipeline (AI_DRAFT -> STUDENT_REVIEWED -> PENDING_MENTOR ->
+        VERIFIED, same as any genuinely-earned skill — see EvidenceService),
+        so seeded StudentSkillProfile rows are indistinguishable from ones
+        earned by actually completing a task. Needs a real task to attach
+        that evidence to, so it reuses TaskService's own idempotent seed
+        fixture rather than inventing a parallel one."""
         paths_created = 0
         for p in SEED_EDUCATION_PATHS:
             existing = self.db.query(EducationPath).filter(EducationPath.name == p["name"]).first()
             if existing is None:
                 self.repo.create_path(dict(p))
                 paths_created += 1
+
+        seed_task_info = TaskService(self.db).seed_demo_data()
+        seed_task = self.task_repo.get_task(seed_task_info["root_task_id"])
+        evidence_service = EvidenceService(self.db)
 
         students_created = 0
         demo_student_id = None
@@ -223,7 +234,26 @@ class GuidanceService:
 
             for skill_name in s["skills"]:
                 skill = self.market_repo.get_or_create_skill(skill_name, category="general")
-                self.student_repo.associate_skill(student.id, skill.id)
+                existing_profile = self.db.query(StudentSkillProfile).filter(
+                    StudentSkillProfile.student_id == student.id,
+                    StudentSkillProfile.skill_id == skill.id,
+                ).first()
+                if existing_profile is not None:
+                    continue
+                claim = evidence_service.create_claim(EvidenceClaimCreate(
+                    student_id=student.id,
+                    skill_id=skill.id,
+                    task_id=seed_task.id,
+                    claim=f"Seed demo evidence: {skill_name}",
+                    task_complexity=seed_task.complexity_level.value,
+                    risk_level=seed_task.risk_level.value,
+                    proposed_skill_level="L2",
+                ))
+                evidence_service.student_review(claim.id)
+                evidence_service.submit_to_mentor(claim.id)
+                evidence_service.mentor_decide(
+                    claim.id, mentor_id=0, decision=EvidenceStatus.VERIFIED, comment="Seed data"
+                )
 
         return {
             "education_paths_created": paths_created,

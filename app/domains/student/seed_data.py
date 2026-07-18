@@ -3,7 +3,10 @@ GuidanceService.seed_demo_data() (this domain has no seed endpoint of its own ye
 
 `skills` on each student references skill names by name, reusing the shared
 catalog from domains.market.seed_data.SEED_SKILLS rather than defining new
-skills here — this domain seeds no Skill rows itself, only StudentSkill links.
+skills here — this domain seeds no Skill rows itself. GuidanceService.seed_demo_data
+records each one as a StudentSkillProfile, produced through the real
+AI_DRAFT -> VERIFIED evidence chain (see EvidenceService) rather than a direct
+insert, so seeded skills are indistinguishable from genuinely-earned ones.
 Because of that, market seed data must run before this one (already the case:
 GuidanceService.seed_demo_data calls self.market_repo.get_or_create_skill,
 which is a lookup-or-create — if market hasn't been seeded yet, these calls

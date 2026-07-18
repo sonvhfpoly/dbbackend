@@ -5,6 +5,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from core.database import Base
+from core.exceptions import BusinessLogicException
+from domains.evidence.models import EvidenceStatus
+from domains.evidence.schemas import EvidenceClaimCreate
+from domains.evidence.service import EvidenceService
 from domains.market.repository import MarketRepository
 from domains.student.models import StudentCareerRecommendation
 from domains.student.repository import StudentRepository
@@ -50,6 +54,26 @@ def make_recommendation_service(db, chatbot):
     return service
 
 
+def _verify_skill(db, student_id, skill_id, task, level="L2"):
+    """Runs a skill through the real EvidenceClaim chain (AI_DRAFT ->
+    STUDENT_REVIEWED -> PENDING_MENTOR -> VERIFIED) so a genuine
+    StudentSkillProfile row exists — the recommendation engine now only
+    trusts that as its skill signal, not Task.skills."""
+    evidence_service = EvidenceService(db)
+    claim = evidence_service.create_claim(EvidenceClaimCreate(
+        student_id=student_id,
+        skill_id=skill_id,
+        task_id=task.id,
+        claim=f"Demonstrated skill on task '{task.title}'",
+        task_complexity=task.complexity_level.value,
+        risk_level=task.risk_level.value,
+        proposed_skill_level=level,
+    ))
+    evidence_service.student_review(claim.id)
+    evidence_service.submit_to_mentor(claim.id)
+    evidence_service.mentor_decide(claim.id, mentor_id=0, decision=EvidenceStatus.VERIFIED, comment="test")
+
+
 def seed_completed_task(db):
     market = MarketRepository(db)
     tasks = TaskRepository(db)
@@ -81,10 +105,12 @@ def seed_completed_task(db):
         status=SubmissionStatus.COMPLETED,
         completed_by=CompletionActor.MENTOR,
     )
+    _verify_skill(db, student.id, python.id, task)
+    _verify_skill(db, student.id, sql.id, task)
     return student, career, task
 
 
-def test_llm_recommendation_uses_completed_task_skills_and_upserts(db):
+def test_llm_recommendation_uses_verified_skill_profile_and_upserts(db):
     student, career, task = seed_completed_task(db)
     chatbot = FakeChatbot(
         '{"recommendations":[{"career_id":%d,"score":0.82,'
@@ -119,6 +145,43 @@ def test_llm_recommendation_uses_completed_task_skills_and_upserts(db):
     assert second[0].id == first[0].id
     assert second[0].score == 0.91
     assert db.query(StudentCareerRecommendation).count() == 1
+
+
+def test_generate_recommendations_rejects_completed_task_without_verified_skill(db):
+    """A completed task with Task.skills linked (via skill_ids) is NOT enough
+    signal on its own — StudentSkillProfile (built only from VERIFIED
+    evidence) is the sole source of truth, so a student with zero verified
+    skills must be rejected even if they've completed tasks."""
+    market = MarketRepository(db)
+    tasks = TaskRepository(db)
+    students = StudentRepository(db)
+
+    python = market.get_or_create_skill("Python", category="technical")
+    career = market.get_or_create_career("Công nghệ thông tin")
+    market.get_or_create_job("Backend Developer", career.id, [python.id])
+    student = students.create_student({"full_name": "Trần Bình", "email": "binh@example.com"})
+    company = tasks.get_or_create_company({"name": "Acme", "slug": "acme-career-2"})
+    task = tasks.create_task(
+        {
+            "title": "Viết script",
+            "company_id": company.id,
+            "estimated_hours_min": 1,
+            "estimated_hours_max": 2,
+            "competency_points": 10,
+            "context": "ctx",
+            "skill_ids": [python.id],
+        }
+    )
+    submission = tasks.create_submission(task.id, student.id)
+    tasks.update_submission(submission.id, status=SubmissionStatus.COMPLETED, completed_by=CompletionActor.MENTOR)
+
+    service = make_recommendation_service(db, chatbot=FakeChatbot("{}"))
+
+    with pytest.raises(BusinessLogicException):
+        service.generate_student_career_recommendations(
+            student.id, RecommendationGenerateRequest(limit=5, persist=True)
+        )
+    assert service.chatbot.calls == []  # rejected before ever calling the LLM
 
 
 def test_task_completion_schedules_background_recommendation_refresh(db):
