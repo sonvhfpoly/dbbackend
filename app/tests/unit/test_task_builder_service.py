@@ -38,8 +38,9 @@ class FakeChatbot:
 
 class FakeTaskService:
     """Stands in for domains.task.service.TaskService — generate_task now
-    delegates task creation to it (with skip_ai_planning=True) instead of
-    calling TaskRepository directly, and start_conversation calls
+    delegates task creation to it (with skip_ai_planning=False, so a
+    genuinely broad version can still get auto-split into sub-tasks) instead
+    of calling TaskRepository directly, and start_conversation calls
     resolve_company_id before creating the TBConversation."""
     def __init__(self):
         self.created = []
@@ -329,3 +330,19 @@ def test_generate_task_creates_exactly_one_task():
     assert conv.status == ConversationStatus.TASK_CREATED
     # A confirmation message was appended to the transcript.
     assert conv.messages[-1].role == MessageRole.AI
+
+def test_generate_task_enables_ai_planning_for_sub_task_splitting():
+    """Regression test: generate_task used to hardcode skip_ai_planning=True,
+    so a task created from the AI Task Builder could never get auto-split
+    into sub-tasks — the only capability that ever exercised that path was
+    the seed-demo-data script. Enabled per explicit request so a genuinely
+    broad AI-Task-Builder version can still be split, same as a manually
+    created task would."""
+    repo = FakeTBRepo()
+    conv = make_conversation(repo, status=ConversationStatus.READY, proposed_versions=[VERSION_L1])
+    task_service = FakeTaskService()
+    service = make_service(repo=repo, task_service=task_service)
+
+    service.generate_task(conv.id, "L1")
+
+    assert task_service.created[0].skip_ai_planning is False

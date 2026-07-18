@@ -275,7 +275,7 @@ class TaskService:
             raw_reply = self.chatbot.complete([
                 {"role": "system", "content": TASK_PLANNING_SYSTEM_PROMPT},
                 {"role": "user", "content": self._build_planning_prompt(task)},
-            ])
+            ], json_mode=True)
             plan = self._parse_planning_output(raw_reply)
         except Exception:
             return
@@ -329,7 +329,7 @@ class TaskService:
             raw_reply = self.chatbot.complete([
                 {"role": "system", "content": COMPLEXITY_ASSESSMENT_SYSTEM_PROMPT},
                 {"role": "user", "content": self._build_complexity_prompt(data)},
-            ])
+            ], json_mode=True)
             plan = self._parse_planning_output(raw_reply)
         except Exception:
             return None

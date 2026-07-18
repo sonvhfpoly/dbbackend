@@ -281,7 +281,7 @@ class TaskBuilderService:
                 title=version["title"],
                 complexity_level=version["complexity_level"],
                 company_id=conversation.company_id,
-                skip_ai_planning=True,
+                skip_ai_planning=False,
                 estimated_hours_min=version["estimated_hours_min"],
                 estimated_hours_max=version["estimated_hours_max"],
                 competency_points=version["competency_points"],
@@ -292,11 +292,15 @@ class TaskBuilderService:
         except ValidationError as exc:
             raise BusinessLogicException(f"Proposed version '{selected_version}' has invalid data: {exc}") from exc
 
-        # skip_ai_planning=True above means this goes through the normal
-        # TaskService.create_task() without triggering its AI planning pass
-        # (task/service.py's _ai_plan_subtasks) — this conversation has already
-        # scoped exactly one task version, so it must be created as-is, not
-        # further split by a second, uncoordinated AI call.
+        # skip_ai_planning=False: TaskService.create_task now runs its normal
+        # AI planning pass (_ai_plan_subtasks) on the generated task too, so a
+        # version that's genuinely too broad for one submission still gets
+        # split into sub-tasks with incremental points, the same as a
+        # manually-created task would. complexity_level is already set from
+        # the conversation's chosen version above, and create_task passes
+        # override_complexity=False whenever complexity_level was explicitly
+        # given — so this second AI call can still propose a split, but can't
+        # clobber the T-level the enterprise already agreed to in the chat.
         created_task = self.task_service.create_task(task_create)
 
         ai_message = f"Đã tạo task '{created_task.title}' (phiên bản {selected_version}), mã #{created_task.id}."

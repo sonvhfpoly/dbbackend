@@ -83,8 +83,10 @@ class FakeRepo:
 class FakeChatbot:
     def __init__(self, reply):
         self.reply = reply
+        self.calls = []
 
-    def complete(self, messages):
+    def complete(self, messages, json_mode=False):
+        self.calls.append(json_mode)
         if isinstance(self.reply, Exception):
             raise self.reply
         return self.reply
@@ -155,6 +157,30 @@ def test_ai_plan_subtasks_does_not_touch_complexity_when_override_disabled():
     service._ai_plan_subtasks(task, override_complexity=False)
 
     assert task.complexity_level == TaskComplexity.T1  # AI's "T3" opinion ignored
+
+def test_ai_plan_subtasks_requests_json_mode_from_provider():
+    """Regression test: without json_mode=True, the model isn't constrained
+    to return JSON at the provider level, so a freeform reply silently fails
+    _parse_planning_output and _ai_plan_subtasks swallows it — the task is
+    still created, just as a flat task with zero sub-tasks and no error
+    surfaced anywhere. This is the same class of bug fixed for task_builder's
+    _complete_and_parse; the fix here is the same json_mode=True flag."""
+    task = make_root_task()
+    repo = FakeRepo(tasks={task.id: task})
+    chatbot = FakeChatbot('{"complexity_level": "T2", "should_split": false, "sub_tasks": []}')
+    service = make_service(repo, chatbot=chatbot)
+
+    service._ai_plan_subtasks(task)
+
+    assert chatbot.calls == [True]
+
+def test_ai_assess_complexity_requests_json_mode_from_provider():
+    chatbot = FakeChatbot('{"complexity_level": "T2"}')
+    service = make_service(FakeRepo(), chatbot=chatbot)
+
+    service._ai_assess_complexity({"title": "t", "context": "c", "estimated_hours_min": 1, "estimated_hours_max": 2})
+
+    assert chatbot.calls == [True]
 
 def test_ai_plan_subtasks_skipped_entirely_when_skip_true():
     task = make_root_task()
