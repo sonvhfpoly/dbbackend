@@ -8,6 +8,7 @@ Backend cho nền tảng kết nối doanh nghiệp — giáo viên/mentor — s
 - [docs/DATA_MODEL.md](docs/DATA_MODEL.md) — entity của `task`/`evidence`/`eportfolio`
 - [docs/MARKET_DATA_MODEL.md](docs/MARKET_DATA_MODEL.md) — entity của `market` (Career/Job/JobPosting)
 - [docs/TESTING.md](docs/TESTING.md) — hướng dẫn chạy, test, tích hợp end-to-end toàn bộ domain
+- [docs/CODE_REVIEW_ASSIGNMENTS.md](docs/CODE_REVIEW_ASSIGNMENTS.md) — phân công review code cho 3 dev, chia theo domain
 
 ## Trạng thái hiện tại
 
