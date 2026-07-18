@@ -44,6 +44,16 @@ Doanh nghiệp tài trợ task. `slug` unique dùng cho route URL-friendly. `is_
 
 > **Về `company_id` bỏ trống/không hợp lệ**: `TaskCreate.company_id` (và `TBConversationCreate.company_id`) là `Optional[int]` ở tầng request. Nếu bỏ trống hoặc trỏ tới một `company_id` không tồn tại, `TaskService.resolve_company_id` tự resolve về một `Company` placeholder dùng chung (`slug="unregistered-company"`, tạo lười lần đầu cần tới) thay vì raise lỗi — cột DB vẫn `NOT NULL` FK như bảng trên, mọi `Task`/`TBConversation` luôn trỏ tới một company thật, chỉ có thể là placeholder thay vì company caller định nhắc tới. Gọi từ cả `TaskService.create_task` lẫn `TaskBuilderService.start_conversation`.
 
+### `TaskSkill` — skill(s) mà 1 Task rèn luyện
+
+Bảng liên kết N-N `(task_id, skill_id)`, composite PK, trỏ tới `Skill` (domain `market`). Quan hệ `Task.skills` (`secondary="task_skills"`).
+
+Được ghi theo 2 cách, cùng đổ vào 1 bảng:
+- **Tự động lúc tạo task** (`TaskService._ai_link_skills`, gọi ngay sau khi task được tạo — root task chỉ gọi nếu **không** tách sub-task, container thì mỗi sub-task tự link riêng): AI đọc title/context của task, đối chiếu với danh sách skill có sẵn (ưu tiên tái dùng qua `get_or_create_skill`), trả về 1-3 skill. Best-effort — lỗi AI (timeout, JSON không hợp lệ) bị nuốt (`try/except: return`), không chặn việc tạo task.
+- **Thủ công** — `TaskService.set_task_skills(task_id, skill_ids)` cho phép business/mentor tự khai báo/ghi đè skill của 1 task.
+
+**Vai trò duy nhất của bảng này**: đọc lại lúc task hoàn thành để biết tạo evidence claim cho (những) skill nào — xem mục "Evidence tự động tạo khi hoàn thành task" bên dưới. Đây là catalog-level ("task này dạy gì"), **không phải** tín hiệu đã xác thực cho 1 student cụ thể — không dùng trực tiếp làm "known skill" của student ở bất kỳ đâu (xem ghi chú `StudentSkillProfile` ở mục 2).
+
 ### `TaskReview` — quyết định của mentor trên chính Task (khác `TaskSubmission` review)
 
 Append-only history (1 task có thể được review nhiều lần: `NEED_MORE_INFO` → business sửa → review lại). `Task.review_status` luôn phản ánh quyết định gần nhất.
@@ -87,10 +97,14 @@ Bảng con 1-N của `Task` — input tài liệu/dataset, output mong đợi, t
 ```
 JOINED → SUBMITTED → AUTO_CHECK_PASSED ─┐
                     └→ AUTO_CHECK_FAILED  (quay lại SUBMITTED)
-                                          ├→ MENTOR_APPROVED → COMPLETED
+                                          ├→ COMPLETED   (mentor approve — xem ghi chú dưới)
                                           └→ MENTOR_REJECTED  (quay lại SUBMITTED)
 ```
-Nếu `Task.requires_mentor_approval=false`, có thể đi thẳng `AUTO_CHECK_PASSED → COMPLETED` với `completed_by=AI`.
+Nếu `Task.requires_mentor_approval=false`, có thể đi thẳng `AUTO_CHECK_PASSED → COMPLETED` với `completed_by=AI` (`run_auto_check`).
+
+> **`MENTOR_APPROVED` là trạng thái transient/legacy, không phải bước dừng lại chờ**: mentor approval luôn là gate cuối cùng bất cứ khi nào có mentor tham gia — `TaskService.mentor_review(approved=True)` hoàn thành thẳng luôn (`status=COMPLETED`, `completed_by=MENTOR`) thay vì dừng ở `MENTOR_APPROVED` chờ 1 lệnh gọi `/complete` riêng dễ bị quên. `complete_submission`/`MENTOR_APPROVED` trong enum vẫn tồn tại chỉ để xử lý submission cũ còn kẹt lại từ trước khi auto-complete được thêm vào.
+>
+> **3 nơi hoàn thành 1 submission** — `complete_submission`, `mentor_review` (approved), và `run_auto_check` (khi task không cần mentor) — **đều** gọi `TaskService._draft_evidence_for_completion` ngay khi set `status=COMPLETED`. Xem "Evidence tự động tạo khi hoàn thành task" ở mục 2.
 
 > **Về resubmit sau `MENTOR_REJECTED`/`AUTO_CHECK_FAILED`**: `TaskService.submit_report` cho phép nộp lại (đúng theo `requirements.md`'s Revision Flow, được gộp đơn giản vào lại `MENTOR_REJECTED`/`SUBMITTED` thay vì thêm state `REVISION_REQUESTED`/`RESUBMITTED_TO_MENTOR` riêng). Mỗi lần nộp lại, `mentor_feedback`/`mentor_decision_at`/`auto_check_result` của vòng review trước bị xóa về `null` — nếu không, bản nộp mới (chưa ai xem) sẽ trông như đã có quyết định từ vòng cũ, dễ khiến client tưởng nhầm trạng thái và gọi `/submit` lần nữa trong khi `status` thật đã tiến lên `SUBMITTED`.
 
@@ -114,6 +128,7 @@ Khác `TaskEvaluationCriterion` (rubric tĩnh) — bảng này lưu kết quả 
 Company (1) ──< (N) Task
 Task    (1) ──< (N) TaskInput / TaskOutput / TaskEvaluationCriterion / TaskReview / TaskSubmission
 Task    (1) ──< (N) Task                     (self-ref parent_task_id, tối đa 2 cấp)
+Task    (N) ──< (N) Skill                    (qua TaskSkill, domain market)
 TaskSubmission (1) ──< (N) TaskSubmissionScore / TaskSubmissionFile
 TaskSubmission.student_id ─ ─ ─ (tham chiếu lỏng) ─ ─ ─> Student (domain khác)
 ```
@@ -157,6 +172,16 @@ AI_DRAFT → STUDENT_REVIEWED → PENDING_MENTOR → VERIFIED
 ```
 
 **Điểm human-in-the-loop quan trọng nhất hệ thống**: chỉ khi mentor quyết định `VERIFIED`, `EvidenceService._apply_to_skill_profile` mới gọi `StudentProfileService.create_student_skill_event(...)` (domain `student`) để thực sự đổi `StudentSkillProfile.level`. `REJECTED`/`NEED_MORE_EVIDENCE` **không** đụng vào skill profile. Việc này khớp đúng nguyên tắc `AI proposes Evidence → Mentor verifies` ([requirements.md §29](requirements.md#29-ai-traceability)).
+
+### Evidence tự động tạo khi hoàn thành task
+
+Ngoài tạo thủ công qua `POST /evidence/`, `TaskService._draft_evidence_for_completion` (gọi từ cả 3 nơi hoàn thành submission — xem ghi chú `MENTOR_APPROVED` ở mục 1) tự tạo 1 `EvidenceClaim` (`status=AI_DRAFT`) cho **mỗi** skill mà task đó đã link qua `TaskSkill`, với `proposed_skill_level = task.target_evidence_level`. Best-effort: không có `TaskSkill` nào → no-op; 1 skill tạo claim lỗi (vd. skill đã bị xóa) không chặn các skill khác hay chặn việc hoàn thành task.
+
+Claim tự tạo này **đi qua đúng state machine đầy đủ** ở trên như claim thủ công — không có đường tắt nào tự động `VERIFIED`. `StudentSkillProfile` chỉ đổi khi mentor tự tay quyết định `VERIFIED` cho claim đó, giống hệt claim tạo thủ công.
+
+### `StudentSkillProfile` là nguồn "known skill" DUY NHẤT
+
+`domains/student/models.py`'s `StudentSkillProfile` (level 1-5, confidence, evidence_count — cập nhật bởi `StudentProfileService.create_student_skill_event`, chỉ được gọi từ `EvidenceService._apply_to_skill_profile` khi `VERIFIED`) là nguồn sự thật DUY NHẤT cho "student này biết/giỏi skill gì", dùng nhất quán ở mọi nơi cần: `guidance` (gợi ý Task tiếp theo), `eportfolio` (`verified_skills`), và `student` (career recommendation — xem [MARKET_DATA_MODEL.md](MARKET_DATA_MODEL.md)). Bảng `StudentSkill` (tag nhị phân cũ, không có level/confidence) đã bị xóa hoàn toàn khỏi codebase — không tái tạo lại. `Task.skills`/`TaskSkill` KHÔNG phải nguồn known-skill (đó là catalog "task này dạy gì", không phải "student này đã chứng minh gì").
 
 ---
 

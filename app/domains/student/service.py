@@ -31,8 +31,9 @@ from domains.student.schemas import (
 
 CAREER_RECOMMENDATION_SYSTEM_PROMPT = (
     "Bạn là hệ thống gợi ý nghề nghiệp có thể giải thích cho sinh viên. "
-    "Dựa CHỈ trên các task sinh viên đã hoàn thành, kỹ năng gắn với các task đó, "
-    "kết quả đánh giá và catalog nghề nghiệp được cung cấp, hãy xếp hạng các nghề phù hợp. "
+    "Dựa CHỈ trên kỹ năng đã được xác thực của sinh viên (known_skills, mỗi kỹ năng có "
+    "level/confidence/evidence_count), lịch sử các task đã hoàn thành kèm kết quả đánh giá, "
+    "và catalog nghề nghiệp được cung cấp, hãy xếp hạng các nghề phù hợp. "
     "Không được tạo career_id hoặc kỹ năng ngoài catalog. Điểm score nằm trong [0,1]. "
     "Lý do phải nêu bằng chứng cụ thể từ task/kỹ năng; không được khẳng định đây là lựa chọn "
     "duy nhất hay chắc chắn. Viết rationale, strengths, gaps và next_steps bằng tiếng Việt. "
@@ -279,11 +280,13 @@ class StudentProfileService:
         payload: RecommendationGenerateRequest,
     ) -> list[StudentCareerRecommendation]:
         student = self.get_student(student_id)
-        completed_tasks = self._completed_task_signals(student_id)
-        if not completed_tasks:
+        known_skills = self._known_skill_signals(student_id)
+        if not known_skills:
             raise BusinessLogicException(
-                "Sinh viên chưa hoàn thành task nào nên chưa đủ dữ liệu để gợi ý nghề nghiệp."
+                "Sinh viên chưa có kỹ năng nào được xác thực (StudentSkillProfile) nên chưa đủ "
+                "dữ liệu để gợi ý nghề nghiệp."
             )
+        completed_tasks = self._completed_task_signals(student_id)
 
         career_catalog = self._career_catalog()
         if not career_catalog:
@@ -298,6 +301,7 @@ class StudentProfileService:
                     "id": student.id,
                     "profile": student.ai_inferred_profile or {},
                 },
+                "known_skills": known_skills,
                 "completed_tasks": completed_tasks,
                 "career_catalog": career_catalog,
                 "limit": payload.limit,
@@ -377,6 +381,27 @@ class StudentProfileService:
             recommendation.career_title = careers.get(recommendation.career_id)
         return recommendations
 
+    def _known_skill_signals(self, student_id: int) -> list[dict]:
+        """The student's verified skill signal for career recommendation —
+        StudentSkillProfile only, same source of truth already used by
+        guidance/service.py._known_skill_ids and eportfolio/service.py's
+        _verified_skills. Deliberately NOT Task.skills (a task's own
+        declared/AI-linked catalog, unverified per student) — a task being
+        linked to "Python" doesn't mean this particular student actually
+        demonstrated it."""
+        profiles = self.list_student_skill_profiles(student_id)
+        signals = []
+        for profile in profiles:
+            skill = self.market_repo.get_skill(profile.skill_id)
+            signals.append({
+                "skill_id": profile.skill_id,
+                "skill_name": skill.name if skill else f"skill_{profile.skill_id}",
+                "level": profile.level,
+                "confidence": profile.confidence,
+                "evidence_count": profile.evidence_count,
+            })
+        return signals
+
     def _completed_task_signals(self, student_id: int) -> list[dict]:
         rows = (
             self.db.query(TaskSubmission, Task)
@@ -404,10 +429,6 @@ class StudentProfileService:
                     "title": task.title,
                     "context": task.context,
                     "complexity_level": task.complexity_level.value,
-                    "skills": [
-                        {"id": skill.id, "name": skill.name, "category": skill.category}
-                        for skill in task.skills
-                    ],
                     "scores": scores,
                     "mentor_feedback": submission.mentor_feedback,
                     "student_reflection": submission.student_reflection,
