@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from .models import Student, InteractionLog, StudentSkillAssociation
+from .models import Student, InteractionLog, StudentSkill
 from typing import List, Optional, Dict, Any
 
 class StudentRepository:
@@ -35,6 +35,6 @@ class StudentRepository:
         return student
 
     def associate_skill(self, student_id: int, skill_id: int):
-        assoc = StudentSkillAssociation(student_id=student_id, skill_id=skill_id)
+        assoc = StudentSkill(student_id=student_id, skill_id=skill_id)
         self.db.merge(assoc) # Use merge to avoid duplicates
         self.db.commit()

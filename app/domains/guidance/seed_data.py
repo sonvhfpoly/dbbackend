@@ -52,13 +52,3 @@ SEED_EDUCATION_PATHS = [
     },
 ]
 
-SEED_STUDENT = {
-    "full_name": "Nguyen Van A",
-    "email": "student.demo@career-guidance.local",
-    "current_location": "Can Tho",
-    "ai_inferred_profile": {
-        "interests": ["technology", "problem-solving", "video games"],
-        "strengths": ["logical thinking", "math"],
-        "notes": "Built up from chat + quiz interactions (see InteractionLog), not a single personality-test result.",
-    },
-}

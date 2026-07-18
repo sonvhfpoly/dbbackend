@@ -29,8 +29,8 @@ class InteractionLog(Base):
 
     student = relationship("Student", back_populates="interactions")
 
-class StudentSkillAssociation(Base):
-    __tablename__ = "student_skill_association"
+class StudentSkill(Base):
+    __tablename__ = "student_skill"
 
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), primary_key=True)
     skill_id: Mapped[int] = mapped_column(ForeignKey("skills.id"), primary_key=True)
