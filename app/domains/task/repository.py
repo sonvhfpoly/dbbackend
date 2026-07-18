@@ -66,7 +66,7 @@ class TaskRepository:
             query = query.filter(Task.company_id == company_id)
         if review_status:
             query = query.filter(Task.review_status == review_status)
-        return query.all()
+        return query.order_by(Task.created_at.desc()).all()
 
     def get_sub_tasks(self, parent_task_id: int) -> List[Task]:
         return (

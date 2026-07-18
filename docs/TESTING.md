@@ -19,7 +19,7 @@ Không cần chạy `alembic upgrade head` trước — `AUTO_CREATE_SCHEMA=true
 uv run --project .. pytest -q
 ```
 
-119 test hiện có, chia theo file:
+121 test hiện có, chia theo file:
 
 | File | Domain | Nội dung |
 |---|---|---|
@@ -91,6 +91,8 @@ curl -X POST http://127.0.0.1:8000/tasks/ \
   -d '{"title":"Task khong ro cong ty","estimated_hours_min":1,"estimated_hours_max":2,"competency_points":10,"context":"ctx","complexity_level":"T1","skip_ai_planning":true}'
 # -> 200, company_id trong response trỏ tới company placeholder, không phải lỗi
 ```
+
+**`created_at`/`updated_at`/`deadline`**: `GET /tasks/` giờ trả về `created_at` (tự sinh lúc tạo), `updated_at` (tự cập nhật mỗi lần task bị sửa — mentor review, AI planning), và `deadline` (optional, hạn mong muốn của doanh nghiệp, truyền vào lúc tạo qua `POST /tasks/` hoặc do AI Task Builder tự trích xuất từ brief). `GET /tasks/` mặc định sắp theo `created_at` giảm dần (task mới nhất lên đầu) — không cần FE tự sort theo `id` nữa.
 
 **Risk gate** ([requirements.md §4.2](requirements.md#42-task-risk--r-level)):
 ```bash

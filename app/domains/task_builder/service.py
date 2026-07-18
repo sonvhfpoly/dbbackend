@@ -40,7 +40,10 @@ TASK_BUILDER_SYSTEM_PROMPT = (
     "\"open_questions\": [str, ...], \"proposed_versions\": [{\"version_label\": str, "
     "\"title\": str, \"context\": str, \"complexity_level\": \"T1\"|\"T2\"|\"T3\", "
     "\"estimated_hours_min\": int, \"estimated_hours_max\": int, \"competency_points\": int, "
-    "\"scope_included\": [str, ...], \"scope_excluded\": [str, ...]}]}. "
+    "\"scope_included\": [str, ...], \"scope_excluded\": [str, ...], "
+    "\"deadline\": str|null}]}. deadline is an ISO 8601 datetime if the enterprise mentioned a "
+    "desired completion date anywhere in the brief, otherwise null — never ask a clarifying "
+    "question just to obtain it. "
     "open_questions must list only questions still unanswered (empty once status is "
     "\"ready\"); proposed_versions must be [] unless status is \"ready\". Keep the same "
     "language (Vietnamese or English) as the enterprise's messages."
@@ -288,6 +291,7 @@ class TaskBuilderService:
                 context=version["context"],
                 scope_included=version.get("scope_included") or [],
                 scope_excluded=version.get("scope_excluded") or [],
+                deadline=version.get("deadline"),
             )
         except ValidationError as exc:
             raise BusinessLogicException(f"Proposed version '{selected_version}' has invalid data: {exc}") from exc

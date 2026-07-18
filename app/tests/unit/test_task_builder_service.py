@@ -331,6 +331,27 @@ def test_generate_task_creates_exactly_one_task():
     # A confirmation message was appended to the transcript.
     assert conv.messages[-1].role == MessageRole.AI
 
+def test_generate_task_passes_through_deadline_when_ai_proposed_one():
+    repo = FakeTBRepo()
+    version_with_deadline = dict(VERSION_L1, deadline="2026-08-01T00:00:00")
+    conv = make_conversation(repo, status=ConversationStatus.READY, proposed_versions=[version_with_deadline])
+    task_service = FakeTaskService()
+    service = make_service(repo=repo, task_service=task_service)
+
+    service.generate_task(conv.id, "L1")
+
+    assert str(task_service.created[0].deadline) == "2026-08-01 00:00:00"
+
+def test_generate_task_deadline_defaults_to_none_when_not_mentioned():
+    repo = FakeTBRepo()
+    conv = make_conversation(repo, status=ConversationStatus.READY, proposed_versions=[VERSION_L1])
+    task_service = FakeTaskService()
+    service = make_service(repo=repo, task_service=task_service)
+
+    service.generate_task(conv.id, "L1")
+
+    assert task_service.created[0].deadline is None
+
 def test_generate_task_enables_ai_planning_for_sub_task_splitting():
     """Regression test: generate_task used to hardcode skip_ai_planning=True,
     so a task created from the AI Task Builder could never get auto-split

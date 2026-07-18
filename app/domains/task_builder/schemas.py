@@ -32,6 +32,7 @@ class ProposedVersion(BaseModel):
     competency_points: int
     scope_included: List[str] = Field(default_factory=list)
     scope_excluded: List[str] = Field(default_factory=list)
+    deadline: Optional[datetime] = Field(default=None, description="Enterprise's desired completion date, if mentioned in the brief (requirements.md §7.1).")
 
 class TaskBuilderTurn(BaseModel):
     """What every conversation-advancing call (start/add message) returns."""

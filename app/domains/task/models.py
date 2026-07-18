@@ -105,11 +105,19 @@ class Task(Base):
     requires_mentor_approval: Mapped[bool] = mapped_column(default=True)
     mentor_approval_sla_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     data_privacy_notice: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    # Business's desired completion date (requirements.md §7.1 Business Input's
+    # `deadline`) — optional, display/planning only, no backend gate enforces
+    # it (distinct from a per-assignment due_at, which this MVP doesn't have).
+    deadline: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     # Milestones a student is expected to hit while working outside WORKLAB
     # (requirements.md §7.2's AI Structured Task Output) — display-only, no
     # backend gate is tied to them (no Work Session/progress tracking in MVP).
     checkpoints: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    # Bumped automatically whenever this row is updated (mentor review
+    # overriding complexity/risk, AI planning setting complexity_level) — no
+    # extra code needed at the call sites, SQLAlchemy sets it on flush.
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # T-level / R-level / target skill level as proposed by the business or AI
     # at creation time; a mentor review (see TaskReview below) can override
