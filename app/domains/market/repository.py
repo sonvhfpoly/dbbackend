@@ -50,6 +50,24 @@ class MarketRepository:
             skill = self.create_skill({"name": name, "category": category, "description": description})
         return skill
 
+    def rename_skill_if_target_missing(self, old_name: str, new_name: str) -> Optional[Skill]:
+        """Rename a legacy seed skill without changing its primary key.
+
+        If the accented target already exists, leave both rows untouched: an
+        automatic merge would need to reconcile every association table and
+        is unsafe for a demo seed endpoint.
+        """
+        old_skill = self.db.query(Skill).filter(Skill.name == old_name).first()
+        if old_skill is None:
+            return self.db.query(Skill).filter(Skill.name == new_name).first()
+        target = self.db.query(Skill).filter(Skill.name == new_name).first()
+        if target is not None:
+            return target
+        old_skill.name = new_name
+        self.db.commit()
+        self.db.refresh(old_skill)
+        return old_skill
+
     # ---- Career (broadest grouping — "nganh", e.g. "Cong nghe thong tin") ----
 
     def get_career(self, career_id: int) -> Optional[Career]:
@@ -78,6 +96,12 @@ class MarketRepository:
         if career is None:
             career = Career(title=title, description=description)
             self.db.add(career)
+            self.db.commit()
+            self.db.refresh(career)
+        elif description and not career.description:
+            # Seed reruns may encounter an older title-only row. Fill missing
+            # metadata without overwriting a curated description.
+            career.description = description
             self.db.commit()
             self.db.refresh(career)
         return career

@@ -147,7 +147,7 @@ def get_job_demand(
 @router.post(
     "/seed-demo-data",
     tags=["Dev Tools"],
-    summary="Populate a sample career, jobs, skills, and job postings for local testing/demos",
+    summary="Populate 100+ careers plus sample jobs, skills, and job postings for local testing/demos",
     description="Idempotent for the career/jobs/skills catalog (matched by name); job postings are appended on every call. "
                 "Disabled when ENABLE_SEED_ENDPOINT=false, which should be the case in any production deployment.",
 )

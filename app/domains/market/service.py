@@ -5,7 +5,15 @@ from core.exceptions import EntityNotFoundException
 from .repository import MarketRepository
 from .models import MarketTrend, SeniorityLevel
 from .schemas import SkillCreate, SkillUpdate, CareerCreate, CareerUpdate, JobCreate, JobPostingCreate
-from .seed_data import SEED_SKILLS, SEED_CAREER, SEED_JOBS, SEED_GENERAL_SKILLS, SEED_JOB_POSTINGS
+from .seed_data import (
+    SEED_SKILLS,
+    SEED_CAREER,
+    SEED_CAREERS,
+    SEED_JOBS,
+    SEED_GENERAL_SKILLS,
+    SEED_JOB_POSTINGS,
+    SEED_SKILL_RENAMES,
+)
 
 # A Job/Career's demand is considered meaningfully changed only past this
 # threshold, to avoid flip-flopping RISING/DECLINING on small sample noise.
@@ -315,16 +323,28 @@ class MarketService:
     # ---- Seed ----
 
     def seed_demo_data(self):
-        """Populates 1 Career (industry), 5 Jobs under it, general + technical
-        skills, and a mix of recent/older/beginner/multi-level job postings —
-        exercised through the same resolution/fan-out logic as real ingestion
-        (_expand_and_resolve), not hard-coded, so the demo proves the heuristics work."""
+        """Populates a broad Career catalog plus the existing detailed IT demo.
+
+        Careers/Jobs/Skills are idempotent by their unique names. Job postings
+        remain append-only so repeated calls can still generate market-history
+        volume for dashboard demos.
+        """
+        for old_name, new_name in SEED_SKILL_RENAMES.items():
+            self.repo.rename_skill_if_target_missing(old_name, new_name)
+
         skill_id_by_name = {
             s["name"]: self.repo.get_or_create_skill(s["name"], s["category"]).id
             for s in SEED_SKILLS
         }
 
-        career = self.repo.get_or_create_career(SEED_CAREER["title"])
+        career_by_title = {
+            item["title"]: self.repo.get_or_create_career(
+                item["title"],
+                description=item.get("description"),
+            )
+            for item in SEED_CAREERS
+        }
+        career = career_by_title[SEED_CAREER["title"]]
 
         for j in SEED_JOBS:
             skill_ids = [skill_id_by_name[name] for name in j["skills"]]
@@ -361,6 +381,7 @@ class MarketService:
         return {
             "skills_seeded": len(SEED_SKILLS),
             "career_id": career.id,
+            "careers_seeded": len(SEED_CAREERS),
             "jobs_seeded": len(SEED_JOBS),
             "job_postings_inserted": inserted,
         }
