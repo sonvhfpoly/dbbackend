@@ -147,11 +147,9 @@ def test_llm_recommendation_uses_verified_skill_profile_and_upserts(db):
     assert db.query(StudentCareerRecommendation).count() == 1
 
 
-def test_generate_recommendations_rejects_completed_task_without_verified_skill(db):
-    """A completed task with Task.skills linked (via skill_ids) is NOT enough
-    signal on its own — StudentSkillProfile (built only from VERIFIED
-    evidence) is the sole source of truth, so a student with zero verified
-    skills must be rejected even if they've completed tasks."""
+def test_generate_recommendations_falls_back_to_completed_task_skills(db):
+    """A completed task's declared skills are usable as an explicitly
+    unverified fallback when no StudentSkillProfile exists yet."""
     market = MarketRepository(db)
     tasks = TaskRepository(db)
     students = StudentRepository(db)
@@ -175,13 +173,81 @@ def test_generate_recommendations_rejects_completed_task_without_verified_skill(
     submission = tasks.create_submission(task.id, student.id)
     tasks.update_submission(submission.id, status=SubmissionStatus.COMPLETED, completed_by=CompletionActor.MENTOR)
 
+    chatbot = FakeChatbot(
+        '{"recommendations":[{"career_id":%d,"score":0.62,'
+        '"rationale":"Task đã hoàn thành có sử dụng Python.",'
+        '"strengths":"Có trải nghiệm task Python","gaps":"Kỹ năng chưa được mentor xác thực",'
+        '"next_steps":"Hoàn tất xác thực evidence"}]}' % career.id
+    )
+    service = make_recommendation_service(db, chatbot=chatbot)
+
+    recommendations = service.generate_student_career_recommendations(
+        student.id, RecommendationGenerateRequest(limit=5, persist=True)
+    )
+
+    assert len(recommendations) == 1
+    prompt = chatbot.calls[0][0][1]["content"]
+    assert '"known_skills": []' in prompt
+    assert '"skill_name": "Python"' in prompt
+    assert '"signal_source": "completed_task"' in prompt
+    assert '"verified": false' in prompt
+
+
+def test_generate_recommendations_falls_back_to_completed_task_when_skills_are_empty(db):
+    market = MarketRepository(db)
+    tasks = TaskRepository(db)
+    students = StudentRepository(db)
+    career = market.get_or_create_career("Công nghệ thông tin")
+    student = students.create_student({"full_name": "Không Skill", "email": "no-skill@example.com"})
+    company = tasks.get_or_create_company({"name": "No Skill Co", "slug": "no-skill-co"})
+    task = tasks.create_task({
+        "title": "Task không gắn skill",
+        "company_id": company.id,
+        "estimated_hours_min": 1,
+        "estimated_hours_max": 2,
+        "competency_points": 10,
+        "context": "ctx",
+    })
+    submission = tasks.create_submission(task.id, student.id)
+    tasks.update_submission(
+        submission.id,
+        status=SubmissionStatus.COMPLETED,
+        completed_by=CompletionActor.MENTOR,
+    )
+    chatbot = FakeChatbot(
+        '{"recommendations":[{"career_id":%d,"score":0.45,'
+        '"rationale":"Nội dung task đã hoàn thành cho thấy tín hiệu ban đầu.",'
+        '"strengths":"Đã hoàn thành task thực tế","gaps":"Chưa có skill được xác thực",'
+        '"next_steps":"Bổ sung evidence và task có skill rõ ràng"}]}' % career.id
+    )
+    service = make_recommendation_service(db, chatbot=chatbot)
+
+    recommendations = service.generate_student_career_recommendations(
+        student.id,
+        RecommendationGenerateRequest(limit=5, persist=True),
+    )
+
+    assert len(recommendations) == 1
+    prompt = chatbot.calls[0][0][1]["content"]
+    assert '"skills": []' in prompt
+    assert '"title": "Task không gắn skill"' in prompt
+    assert '"context": "ctx"' in prompt
+
+
+def test_generate_recommendations_rejects_without_skills_or_completed_tasks(db):
+    student = StudentRepository(db).create_student({
+        "full_name": "Chưa Có Dữ Liệu",
+        "email": "no-signal@example.com",
+    })
     service = make_recommendation_service(db, chatbot=FakeChatbot("{}"))
 
     with pytest.raises(BusinessLogicException):
         service.generate_student_career_recommendations(
-            student.id, RecommendationGenerateRequest(limit=5, persist=True)
+            student.id,
+            RecommendationGenerateRequest(limit=5, persist=True),
         )
-    assert service.chatbot.calls == []  # rejected before ever calling the LLM
+
+    assert service.chatbot.calls == []
 
 
 def test_task_completion_schedules_background_recommendation_refresh(db):
