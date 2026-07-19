@@ -26,12 +26,18 @@ class PortfolioEvidence(BaseModel):
     proposed_skill_level: str
     mentor_comment: Optional[str] = None
     decided_at: Optional[datetime] = None
+    mentor_id: Optional[int] = Field(
+        default=None,
+        description="Loose reference (no auth/identity system yet, same as student_id/company_id) — there is no "
+                    "Mentor profile to resolve this to a name.",
+    )
 
 class PortfolioTask(BaseModel):
     task_id: int
     title: str
     completed_at: Optional[datetime] = None
     points_awarded: Optional[int] = None
+    joined_at: Optional[datetime] = None
 
 class PortfolioCareerSuggestion(BaseModel):
     career_id: int
@@ -69,3 +75,16 @@ class EPortfolioBusinessView(BaseModel):
     verified_skills: List[PortfolioSkill] = Field(default_factory=list)
     selected_evidence: List[PortfolioEvidence] = Field(default_factory=list)
     selected_tasks: List[PortfolioTask] = Field(default_factory=list)
+    # requirements.md §21 Business View: "career interests nếu student share" —
+    # reaching this view at all already means share_with_business=true (the
+    # service 403s before this point otherwise), so this is always populated.
+    career_suggestions: List[PortfolioCareerSuggestion] = Field(default_factory=list)
+
+# ---- Business view: candidate list summary (requirements.md §32 "Ứng viên") ----
+
+class CandidateSummary(BaseModel):
+    student_id: int
+    full_name: str
+    headline: Optional[str] = None
+    skill_count: int
+    evidence_count: int

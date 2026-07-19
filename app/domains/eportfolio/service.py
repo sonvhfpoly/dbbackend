@@ -9,7 +9,7 @@ from domains.market.repository import MarketRepository
 from .repository import PortfolioRepository
 from .schemas import (
     EPortfolioRead, EPortfolioBusinessView, PortfolioSkill, PortfolioEvidence,
-    PortfolioTask, PortfolioCareerSuggestion, PortfolioNextTask,
+    PortfolioTask, PortfolioCareerSuggestion, PortfolioNextTask, CandidateSummary,
 )
 
 class EPortfolioService:
@@ -46,6 +46,7 @@ class EPortfolioService:
                 proposed_skill_level=c.proposed_skill_level,
                 mentor_comment=c.mentor_comment,
                 decided_at=c.decided_at,
+                mentor_id=c.mentor_id,
             )
             for c in claims
         ]
@@ -62,6 +63,7 @@ class EPortfolioService:
                 title=task.title if task else f"task_{submission.task_id}",
                 completed_at=submission.completed_at,
                 points_awarded=submission.points_awarded,
+                joined_at=submission.joined_at,
             ))
         return tasks
 
@@ -129,8 +131,30 @@ class EPortfolioService:
             verified_skills=self._verified_skills(student_id),
             selected_evidence=self._verified_evidence(student_id),
             selected_tasks=self._completed_tasks(student_id),
+            career_suggestions=self._career_suggestions(student_id),
         )
 
     def update_share_setting(self, student_id: int, share_with_business: bool):
         self.student_service.get_student(student_id)  # 404s if missing
         return self.portfolio_repo.upsert_share_setting(student_id, share_with_business)
+
+    def list_candidates(self) -> list[CandidateSummary]:
+        """requirements.md §32 "Ứng viên" (Business Navigation) — students who
+        opted into share_with_business, with just enough summary for a list
+        screen. Reuses _verified_skills/_verified_evidence (same source as the
+        full views above) rather than a separate counting query."""
+        candidates = []
+        for student_id in self.portfolio_repo.list_shared_student_ids():
+            student = self.student_service.get_student(student_id)
+            try:
+                headline = self.student_service.get_student_profile(student_id).headline
+            except EntityNotFoundException:
+                headline = None
+            candidates.append(CandidateSummary(
+                student_id=student_id,
+                full_name=student.full_name,
+                headline=headline,
+                skill_count=len(self._verified_skills(student_id)),
+                evidence_count=len(self._verified_evidence(student_id)),
+            ))
+        return candidates

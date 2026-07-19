@@ -36,20 +36,21 @@ class Settings(BaseSettings):
     VERTEX_MODEL: str = "gemini-2.5-flash"
 
     # GCS bucket the AI Task Builder (domains/task_builder) uploads enterprise
-    # documents to. Reuses the same ADC/service account as Vertex AI above —
-    # no separate credentials to manage on Cloud Run. Optional: document
-    # upload returns 503 until this is set, same convention as FPT_CLOUD_API_KEY.
+    # reference documents to. Reuses the same ADC/service account as Vertex AI
+    # above — no separate credentials to manage on Cloud Run. Optional:
+    # document upload returns 503 until this is set, same convention as
+    # FPT_CLOUD_API_KEY. Public at the bucket-IAM level (allUsers:objectViewer,
+    # a deliberate choice — see docs/DATA_MODEL.md), so storage_url is a
+    # directly-viewable https:// URL, same as SUBMISSION_FILES_GCS_BUCKET below.
     TASK_BUILDER_GCS_BUCKET: Optional[str] = None
 
-    # GCS bucket task submission deliverable files upload to. Deliberately a
-    # SEPARATE bucket from TASK_BUILDER_GCS_BUCKET: this one is public at the
-    # bucket-IAM level (allUsers:objectViewer) so anyone with the URL can view
-    # a student's submitted file, whereas the task_builder bucket holds a
-    # business's private reference documents and must never be public — the
-    # two can't share a bucket since uniform-bucket-level-access can't scope
-    # "public" to a path prefix. This is a deliberate deviation from
-    # requirements.md §14 (which calls for private storage + signed URLs),
-    # chosen for MVP/demo simplicity — see docs/DATA_MODEL.md.
+    # GCS bucket task submission deliverable files upload to. A SEPARATE
+    # bucket from TASK_BUILDER_GCS_BUCKET purely because uniform-bucket-level-
+    # access can't scope "public" to a path prefix within one bucket — not for
+    # privacy (both buckets are public at the bucket-IAM level, see above).
+    # This is a deliberate deviation from requirements.md §14 (which calls for
+    # private storage + signed URLs), chosen for MVP/demo simplicity — see
+    # docs/DATA_MODEL.md.
     SUBMISSION_FILES_GCS_BUCKET: Optional[str] = None
 
     # Path is resolved relative to the process's current working directory,

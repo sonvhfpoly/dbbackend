@@ -125,6 +125,9 @@ class MarketOverviewStats(BaseModel):
     job_group_count: int = Field(description="Distinct Jobs with at least one matching posting")
     skill_count: int
     growth_speed: GrowthSpeed
+    entry_level_ratio_percent: Optional[float] = Field(
+        description="% of postings in the current window tagged INTERN/JUNIOR; null when the window has zero postings"
+    )
 
 class WeeklyPostingCount(BaseModel):
     week_start: date
@@ -139,7 +142,14 @@ class LocationShare(BaseModel):
     count: int
     percent: float
 
+class SalaryGroup(BaseModel):
+    job_title: str
+    avg_salary_min: Optional[int] = None
+    avg_salary_max: Optional[int] = None
+    posting_count: int
+
 class MarketOverviewRead(BaseModel):
     stats: MarketOverviewStats
     chart: MarketOverviewChart
     location_distribution: List[LocationShare]
+    salary_groups: List[SalaryGroup] = Field(default_factory=list)

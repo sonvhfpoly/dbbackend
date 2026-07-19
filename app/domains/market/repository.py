@@ -1,8 +1,13 @@
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import func, insert
-from .models import Skill, Career, Job, JobSkill, CareerSkill, JobPosting, JobPostingSkill
+from .models import Skill, Career, Job, JobSkill, CareerSkill, JobPosting, JobPostingSkill, SeniorityLevel
 from typing import Dict, List, Optional, Set, Tuple
+
+# ASSUMPTION: requirements.md §24's "entry-level opportunities" = postings
+# explicitly tagged INTERN or JUNIOR; MID/SENIOR/MANAGER and untagged postings
+# don't count.
+ENTRY_LEVEL_SENIORITIES = {SeniorityLevel.INTERN, SeniorityLevel.JUNIOR}
 
 class MarketRepository:
     def __init__(self, db: Session):
@@ -354,6 +359,29 @@ class MarketRepository:
         query = self.db.query(JobPosting.location, func.count(JobPosting.id))
         query = self._apply_job_filters(query, **filters)
         return query.group_by(JobPosting.location).order_by(func.count(JobPosting.id).desc()).all()
+
+    def get_salary_by_job_group(self, **filters) -> List[Tuple[str, Optional[float], Optional[float], int]]:
+        """AVG() ignores NULL salary_min/max on its own — postings without a
+        disclosed salary just don't pull the average down, same as elsewhere
+        in this file. job_id is required for the join, so postings that only
+        resolved to a Career (the beginner fallback case) aren't grouped here."""
+        query = (
+            self.db.query(
+                Job.title,
+                func.avg(JobPosting.salary_min),
+                func.avg(JobPosting.salary_max),
+                func.count(JobPosting.id),
+            )
+            .join(JobPosting, JobPosting.job_id == Job.id)
+        )
+        query = self._apply_job_filters(query, **filters)
+        return query.group_by(Job.title).order_by(func.count(JobPosting.id).desc()).all()
+
+    def count_entry_level_postings(self, **filters) -> int:
+        query = self.db.query(func.count(JobPosting.id))
+        query = self._apply_job_filters(query, **filters)
+        query = query.filter(JobPosting.seniority_level.in_(list(ENTRY_LEVEL_SENIORITIES)))
+        return query.scalar() or 0
 
     def get_job_demand_within_career(self, career_id: int, window_days: int = 30, **filters) -> List[dict]:
         """Per-Job demand/growth within one Career (the 'drill down to a specific

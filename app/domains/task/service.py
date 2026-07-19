@@ -575,6 +575,22 @@ class TaskService:
         self._get_submission_or_404(submission_id)
         return self.repo.list_submission_files(submission_id)
 
+    # ---- Enterprise review (requirements.md BUS-12) ----
+    # Deliberately separate from mentor_review below: BUS-12's constraint is
+    # "Không thay Evidence" — this must never touch TaskSubmission.status or
+    # any EvidenceClaim, only record the business's own feedback. Do not add
+    # a status/evidence side effect here without re-reading that constraint.
+
+    def create_enterprise_review(self, submission_id: int, reviewed_by: int, decision, comment: Optional[str]):
+        self._get_submission_or_404(submission_id)
+        return self.repo.create_enterprise_review(submission_id, {
+            "reviewed_by": reviewed_by, "decision": decision, "comment": comment,
+        })
+
+    def list_enterprise_reviews(self, submission_id: int):
+        self._get_submission_or_404(submission_id)
+        return self.repo.list_enterprise_reviews(submission_id)
+
     def run_auto_check(self, submission_id: int):
         """Placeholder check for MVP: a real implementation would inspect the
         submitted file/report (format, size, required sections). Here we only

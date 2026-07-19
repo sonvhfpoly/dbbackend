@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from .models import (
     Company, Task, TaskInput, TaskOutput, TaskEvaluationCriterion,
     TaskSubmission, TaskSubmissionScore, TaskReview, TaskSubmissionFile, TaskSkill,
+    EnterpriseReview,
 )
 
 class TaskRepository:
@@ -247,5 +248,22 @@ class TaskRepository:
             self.db.query(TaskSubmissionFile)
             .filter(TaskSubmissionFile.submission_id == submission_id)
             .order_by(TaskSubmissionFile.uploaded_at.asc())
+            .all()
+        )
+
+    # ---- Enterprise review (requirements.md BUS-12 — distinct from mentor-review) ----
+
+    def create_enterprise_review(self, submission_id: int, data: dict) -> EnterpriseReview:
+        review = EnterpriseReview(submission_id=submission_id, **data)
+        self.db.add(review)
+        self.db.commit()
+        self.db.refresh(review)
+        return review
+
+    def list_enterprise_reviews(self, submission_id: int) -> List[EnterpriseReview]:
+        return (
+            self.db.query(EnterpriseReview)
+            .filter(EnterpriseReview.submission_id == submission_id)
+            .order_by(EnterpriseReview.created_at.asc())
             .all()
         )

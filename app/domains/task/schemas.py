@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .models import (  # noqa: F401
     TaskInputType, SubmissionStatus, CompletionActor,
     TaskComplexity, TaskRiskLevel, EvidenceLevel, TaskReviewStatus, FileScanStatus,
+    EnterpriseReviewDecision,
 )
 
 class StudentReflection(BaseModel):
@@ -43,6 +44,11 @@ class TaskInputCreate(BaseModel):
     description: str
     input_type: TaskInputType = TaskInputType.OTHER
     is_restricted: bool = False
+    storage_url: Optional[str] = Field(
+        default=None,
+        description="Public URL when this input is a real file — populated automatically for inputs copied "
+                    "from an AI Task Builder conversation's uploaded documents; null for a plain name/description input.",
+    )
 
 class TaskInputRead(TaskInputCreate):
     id: int
@@ -180,6 +186,20 @@ class TaskSubmissionFileRead(BaseModel):
     uploaded_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+class EnterpriseReviewRequest(BaseModel):
+    reviewed_by: int = Field(description="Business-side actor id (no auth/identity system yet — passed explicitly)")
+    decision: EnterpriseReviewDecision
+    comment: Optional[str] = None
+
+class EnterpriseReviewRead(BaseModel):
+    id: int
+    submission_id: int
+    reviewed_by: int
+    decision: EnterpriseReviewDecision
+    comment: Optional[str] = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
 class MentorReviewRequest(BaseModel):
     approved: bool
     feedback: Optional[str] = None
@@ -210,6 +230,7 @@ class TaskSubmissionRead(BaseModel):
     points_awarded: Optional[int] = None
     completed_at: Optional[datetime] = None
     files: List[TaskSubmissionFileRead] = Field(default_factory=list)
+    enterprise_reviews: List[EnterpriseReviewRead] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
 class TaskSubmissionScoreRead(BaseModel):

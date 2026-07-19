@@ -1,10 +1,18 @@
-from typing import Optional
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from .models import PortfolioShareSetting
 
 class PortfolioRepository:
     def __init__(self, db: Session):
         self.db = db
+
+    def list_shared_student_ids(self) -> List[int]:
+        rows = (
+            self.db.query(PortfolioShareSetting.student_id)
+            .filter(PortfolioShareSetting.share_with_business.is_(True))
+            .all()
+        )
+        return [row[0] for row in rows]
 
     def get_share_setting(self, student_id: int) -> Optional[PortfolioShareSetting]:
         return (

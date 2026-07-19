@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from core.exceptions import BusinessLogicException
 from domains.task_builder.service import TaskBuilderService
 from domains.task_builder.models import ConversationStatus, MessageRole
+from domains.task.models import TaskInputType
 
 def make_service(repo=None, task_service=None, chatbot=None):
     """TaskBuilderService.__init__ opens a real DB session — bypass it and
@@ -367,3 +368,35 @@ def test_generate_task_enables_ai_planning_for_sub_task_splitting():
     service.generate_task(conv.id, "L1")
 
     assert task_service.created[0].skip_ai_planning is False
+
+def test_generate_task_copies_conversation_documents_into_task_inputs():
+    """The enterprise's reference document(s) uploaded during the conversation
+    become the generated task's inputs (with storage_url) — otherwise the
+    document stays attached only to the conversation and never surfaces on
+    the Task itself, leaving business/mentor/student with no way to see the
+    original brief file from the task."""
+    repo = FakeTBRepo()
+    conv = make_conversation(repo, status=ConversationStatus.READY, proposed_versions=[VERSION_L1])
+    conv.documents = [
+        SimpleNamespace(id=1, filename="brief.pdf", storage_url="https://storage.googleapis.com/bucket/brief.pdf"),
+    ]
+    task_service = FakeTaskService()
+    service = make_service(repo=repo, task_service=task_service)
+
+    service.generate_task(conv.id, "L1")
+
+    inputs = task_service.created[0].inputs
+    assert len(inputs) == 1
+    assert inputs[0]["name"] == "brief.pdf"
+    assert inputs[0]["storage_url"] == "https://storage.googleapis.com/bucket/brief.pdf"
+    assert inputs[0]["input_type"] == TaskInputType.DOCUMENT
+
+def test_generate_task_with_no_documents_creates_empty_inputs():
+    repo = FakeTBRepo()
+    conv = make_conversation(repo, status=ConversationStatus.READY, proposed_versions=[VERSION_L1])
+    task_service = FakeTaskService()
+    service = make_service(repo=repo, task_service=task_service)
+
+    service.generate_task(conv.id, "L1")
+
+    assert task_service.created[0].inputs == []

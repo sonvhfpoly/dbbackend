@@ -1,10 +1,19 @@
+from typing import List
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from core.database import get_db
-from .schemas import EPortfolioRead, EPortfolioBusinessView, ShareSettingRead, ShareSettingUpdate
+from .schemas import EPortfolioRead, EPortfolioBusinessView, ShareSettingRead, ShareSettingUpdate, CandidateSummary
 from .service import EPortfolioService
 
 router = APIRouter(prefix="/eportfolio", tags=["ePortfolio"])
+
+@router.get(
+    "/candidates",
+    response_model=List[CandidateSummary],
+    summary="List students who opted into share_with_business — the enterprise 'Ứng viên' screen",
+)
+def list_candidates(db: Session = Depends(get_db)):
+    return EPortfolioService(db).list_candidates()
 
 @router.get(
     "/students/{student_id}",

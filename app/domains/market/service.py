@@ -250,12 +250,19 @@ class MarketService:
         job_group_count = self.repo.count_distinct_jobs_with_postings(start=current_start, end=now, **filters)
         skill_count = self.repo.count_distinct_skills_demanded(start=current_start, end=now, **filters)
 
+        # Reuses current_count as the denominator (same "current window" stat
+        # cards are computed over) rather than an extra unwindowed
+        # count_job_postings call.
+        entry_level_count = self.repo.count_entry_level_postings(start=current_start, end=now, **filters)
+        entry_level_ratio_percent = round(entry_level_count / current_count * 100, 1) if current_count > 0 else None
+
         last_posting_at = self.repo.get_last_posting_timestamp(**filters)
         last_updated_days_ago = (now - last_posting_at).days if last_posting_at else None
 
         weekly_counts = self.repo.get_weekly_posting_counts(weeks=8, **filters)
         yearly_avg = self.repo.get_yearly_average_weekly_count(**filters)
         location_rows = self.repo.get_location_distribution(**filters)
+        salary_rows = self.repo.get_salary_by_job_group(**filters)
 
         return {
             "stats": {
@@ -266,12 +273,14 @@ class MarketService:
                 "job_group_count": job_group_count,
                 "skill_count": skill_count,
                 "growth_speed": self._growth_speed_for_rate(mom_growth),
+                "entry_level_ratio_percent": entry_level_ratio_percent,
             },
             "chart": {
                 "weekly_counts": [{"week_start": week_start, "count": count} for week_start, count in weekly_counts],
                 "yearly_average_weekly_count": yearly_avg,
             },
             "location_distribution": self._to_location_shares(location_rows),
+            "salary_groups": self._to_salary_groups(salary_rows),
         }
 
     def get_job_demand(self, career_id: int, window_days: int = 30, **filters) -> List[dict]:
@@ -311,6 +320,18 @@ class MarketService:
         if rest_count > 0:
             shares.append({"location": "Khu vuc khac", "count": rest_count, "percent": round(rest_count / total * 100, 1)})
         return shares
+
+    @staticmethod
+    def _to_salary_groups(rows: List[Tuple[str, Optional[float], Optional[float], int]]) -> List[dict]:
+        return [
+            {
+                "job_title": title,
+                "avg_salary_min": round(avg_min) if avg_min is not None else None,
+                "avg_salary_max": round(avg_max) if avg_max is not None else None,
+                "posting_count": count,
+            }
+            for title, avg_min, avg_max, count in rows
+        ]
 
     # ---- Seed ----
 

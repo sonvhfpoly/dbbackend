@@ -72,6 +72,10 @@ Mỗi tín hiệu thị trường trả về phải có nguồn/độ tin cậy 
 
 Hiện tại `MarketOverviewRead.stats.confidence` (bucket theo `sample_size` — `HIGH`/`MEDIUM`/`LOW`, ngưỡng ở `CONFIDENCE_SAMPLE_THRESHOLDS`) là phần đã implement của yêu cầu này; các field còn lại (`sources`, `limitations` tường minh) chưa có ở mọi response — cân nhắc bổ sung nếu cần đúng 100% shape spec.
 
+§24 cũng liệt kê "salary range" và "entry-level opportunities" là 2 output bắt buộc — implement ở `MarketOverviewRead`:
+- **`salary_groups`** (top-level, ngang hàng `location_distribution`): `MarketRepository.get_salary_by_job_group` — `AVG(salary_min)`/`AVG(salary_max)`/`COUNT(*)` group theo `Job.title` (unwindowed, giống `location_distribution` — không filter theo `days`). Job không có posting nào có `job_id` resolve được (case beginner-fallback chỉ có `career_id`) không xuất hiện ở đây.
+- **`stats.entry_level_ratio_percent`**: % posting trong cửa sổ `days` hiện tại (cùng window với `total_job_postings`) có `seniority_level` là `INTERN`/`JUNIOR` (`ENTRY_LEVEL_SENIORITIES` ở `market/repository.py` — **giả định**, spec không định nghĩa chính xác "entry-level" gồm những level nào). `null` khi cửa sổ hiện tại không có posting nào, không giả `0%`.
+
 ## 5. Endpoint chính (`domains/market/router.py`)
 
 | Endpoint | Việc |

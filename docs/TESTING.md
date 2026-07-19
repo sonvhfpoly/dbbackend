@@ -49,9 +49,10 @@ curl -X POST http://127.0.0.1:8000/guidance/seed-demo-data
 Kiểm tra market:
 ```bash
 curl http://127.0.0.1:8000/market/careers/           # market_trend không phải toàn STABLE
-curl "http://127.0.0.1:8000/market/overview?days=30"  # stat card, chart tuần, phân bố khu vực
+curl "http://127.0.0.1:8000/market/overview?days=30"  # stat card, chart tuần, phân bố khu vực, salary_groups, entry_level_ratio_percent
 curl "http://127.0.0.1:8000/market/analytics/skill-trend?window_days=30"
 ```
+**Kỳ vọng thêm** ([requirements.md §24](requirements.md#24-labor-market-requirements) "salary range"/"entry-level opportunities"): `salary_groups` không rỗng nếu đã seed `JobPosting` có `salary_min`/`salary_max`; `stats.entry_level_ratio_percent` là số 0-100 nếu cửa sổ `days` có posting, `null` nếu không có posting nào (không phải `0`).
 
 Sinh đề xuất — gợi ý **Task tiếp theo** hướng tới 1 target Job (không còn gợi ý `EducationPath`, xem [ARCHITECTURE.md §2](ARCHITECTURE.md#2-bản-đồ-domain-hiện-tại)). Cần `target_job_id` thật (bắt buộc, không có default) — lấy từ `GET /market/jobs/`, và `demo_student_id` từ response seed guidance:
 ```bash
@@ -166,6 +167,16 @@ curl -X POST http://127.0.0.1:8000/tasks/submissions/$SUB2_SUBMISSION_ID/scores 
 curl -X POST http://127.0.0.1:8000/tasks/submissions/$SUB2_SUBMISSION_ID/complete -d '{"completed_by": "MENTOR"}'
 ```
 
+### 3.3.1. EnterpriseReview — feedback phía doanh nghiệp ([requirements.md BUS-12](requirements.md#6-functional-requirements--business))
+
+Tách biệt hoàn toàn khỏi `mentor-review` ở trên — không đổi `status`, không đổi evidence:
+```bash
+curl -X POST http://127.0.0.1:8000/tasks/submissions/$SUB2_SUBMISSION_ID/enterprise-review \
+  -d '{"reviewed_by": 500, "decision": "CHANGES_REQUESTED", "comment": "Can bo sung phan ket luan"}'
+curl http://127.0.0.1:8000/tasks/submissions/$SUB2_SUBMISSION_ID
+```
+**Kỳ vọng**: `enterprise_reviews` (nhúng sẵn trong response submission, giống `files`) chứa review vừa tạo; `status` của submission **không đổi** so với trước khi gọi (kiểm tra kỹ — đây là ràng buộc bắt buộc "Không thay Evidence" của BUS-12, không phải side-effect được phép).
+
 ### 3.4. Cộng dồn điểm ở task cha
 
 ```bash
@@ -196,7 +207,8 @@ curl -X DELETE "http://127.0.0.1:8000/tasks/<task_co_evidence>?force=true"
 - [ ] Task mới tạo (không seed) có `review_status: PENDING_MENTOR_APPROVAL`, `join` bị chặn cho tới khi `review` với `decision: APPROVED`
 - [ ] `approved_risk: R2`/`R3` luôn bị chặn khi `decision: APPROVED`, dù risk gốc của task là gì
 - [ ] `submit` trả `elapsed_seconds` hợp lệ và đúng `student_reflection` đã gửi
-- [ ] Đăng ký file thứ 11 → `400`; file > 50MB → `422`
+- [ ] Đăng ký file thứ 11 → `400`; file > 50MB → `422` (metadata-only) / `413` (upload thật)
+- [ ] `POST .../enterprise-review` không đổi `TaskSubmission.status`; `GET .../submissions/{id}` nhúng sẵn `enterprise_reviews`
 - [ ] `total_points_awarded = 50` sau khi cả 2 sub-task `COMPLETED`
 - [ ] Tạo task bỏ trống `company_id` (hoặc id không tồn tại) → vẫn `200`, resolve về company placeholder
 - [ ] Xóa task có sub-task/submission mà không `force` → `400`; kèm `force=true` → `204` và cascade đúng
@@ -232,12 +244,21 @@ curl -X POST http://127.0.0.1:8000/task-builder/conversations/<id>/generate-task
 
 **`sub_tasks` (kể từ khi bật AI planning cho generate_task)**: `generate_task` gọi `TaskService.create_task(..., skip_ai_planning=False)` — task tạo ra vẫn đi qua `_ai_plan_subtasks` như task tạo thủ công, nên `GET /tasks/{created_task.id}` có thể trả về `sub_tasks: []` (task đủ gọn) hoặc vài sub-task (nếu AI thấy phiên bản quá rộng cho 1 lần nộp) — không tất định, phụ thuộc model. `complexity_level` đã chọn qua hội thoại **không** bị AI ghi đè (`override_complexity=False` khi `complexity_level` đã có sẵn).
 
+**Tài liệu đính kèm → `task.inputs`**: nếu conversation có upload document (`POST .../documents`) trước khi `generate-task`, mỗi document trở thành 1 `TaskInput` (`input_type: "DOCUMENT"`, kèm `storage_url` public) trên task vừa tạo — không cần quay lại API `task-builder/conversations/{id}` để lấy file gốc nữa:
+```bash
+curl -X POST http://127.0.0.1:8000/task-builder/conversations/<id>/documents -F "file=@/path/to/brief.pdf"
+curl -X POST http://127.0.0.1:8000/task-builder/conversations/<id>/generate-task -d '{"selected_version": "L1"}'
+curl http://127.0.0.1:8000/tasks/<created_task.id>
+```
+**Kỳ vọng**: `inputs` của task có 1 phần tử ứng với document vừa upload, `storage_url` mở được ngay (public, không cần auth — bucket `TASK_BUILDER_GCS_BUCKET` đã public IAM).
+
 ### Checklist
 - [ ] `status` chuyển đúng `COLLECTING → READY → TASK_CREATED`
 - [ ] `generate-task` khi chưa `READY` → `400`; `selected_version` không tồn tại → `400`
 - [ ] Task tạo ra có `review_status: PENDING_MENTOR_APPROVAL`; `complexity_level` khớp đúng phiên bản đã chọn (không bị AI planning ghi đè)
 - [ ] Gửi `confirm: true` ở lượt đầu tiên → `status: "READY"` ngay, không cần đủ 3 vòng hỏi
 - [ ] `generate-task` với phiên bản thiếu `complexity_level`/giờ/điểm → vẫn `200`, tự điền mặc định; thiếu `title`/`context` → vẫn `400`
+- [ ] Conversation có document đính kèm → task tạo ra có `inputs` chứa đúng document đó kèm `storage_url`
 - [ ] `pytest app/tests/unit/test_task_builder_service.py` pass
 
 ## 5. Evidence (bằng chứng năng lực)
@@ -313,12 +334,15 @@ Bật consent rồi thử lại:
 ```bash
 curl -X PUT http://127.0.0.1:8000/eportfolio/students/1001/share-settings -d '{"share_with_business": true}'
 curl http://127.0.0.1:8000/eportfolio/students/1001/business-view
+curl http://127.0.0.1:8000/eportfolio/candidates
 ```
-**Kỳ vọng**: `200`, response **không** chứa field nào ngoài `student_id/full_name/headline/verified_skills/selected_evidence/selected_tasks` (không lộ raw AI chat/private reflection — xem [requirements.md §21](requirements.md#21-eportfolio-requirements)).
+**Kỳ vọng**: `business-view` trả `200`, response **không** chứa field nào ngoài `student_id/full_name/headline/verified_skills/selected_evidence/selected_tasks/career_suggestions` (không lộ raw AI chat/private reflection — xem [requirements.md §21](requirements.md#21-eportfolio-requirements)); `selected_evidence[].mentor_id`/`selected_tasks[].joined_at` có giá trị nếu dữ liệu gốc có. `candidates` ([requirements.md §32](requirements.md#32-business-navigation) "Ứng viên") chứa đúng student 1001 (vừa bật consent) kèm `skill_count`/`evidence_count`, không chứa student nào chưa bật `share_with_business`.
 
 ### Checklist
 - [ ] Business view `403` khi chưa consent, `200` sau khi bật `share_with_business`
 - [ ] `verified_evidence`/`verified_skills` chỉ phản ánh evidence đã `VERIFIED`, không lộ `AI_DRAFT`/`PENDING_MENTOR`
+- [ ] `business-view` có `career_suggestions` sau khi consent; `GET /eportfolio/candidates` chỉ liệt kê student đã consent
+- [ ] `pytest app/tests/unit/test_eportfolio_service.py` pass
 
 ## 7. Luồng tích hợp end-to-end (toàn bộ Core Product Flow)
 

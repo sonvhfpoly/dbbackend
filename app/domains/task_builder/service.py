@@ -4,7 +4,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from core.exceptions import BusinessLogicException, EntityNotFoundException
 from domains.chatbot.service import ChatbotService
-from domains.task.schemas import TaskCreate
+from domains.task.schemas import TaskCreate, TaskInputCreate, TaskInputType
 from domains.task.service import TaskService
 from .models import TBConversation, ConversationStatus, MessageRole
 from .repository import TaskBuilderRepository
@@ -279,6 +279,21 @@ class TaskBuilderService:
                 f"Proposed version '{selected_version}' is missing required fields: {', '.join(missing)}"
             )
 
+        # Enterprise reference documents attached to this conversation become
+        # the generated task's inputs, so business/mentor/student can all view
+        # (and download, via storage_url) the same brief the AI read — instead
+        # of that document staying attached only to the conversation and never
+        # surfacing on the Task itself.
+        document_inputs = [
+            TaskInputCreate(
+                name=doc.filename,
+                description=f"Tài liệu tham khảo doanh nghiệp đính kèm khi tạo task ({doc.filename})",
+                input_type=TaskInputType.DOCUMENT,
+                storage_url=doc.storage_url,
+            )
+            for doc in conversation.documents
+        ]
+
         try:
             task_create = TaskCreate(
                 title=version["title"],
@@ -292,6 +307,7 @@ class TaskBuilderService:
                 scope_included=version.get("scope_included") or [],
                 scope_excluded=version.get("scope_excluded") or [],
                 deadline=version.get("deadline"),
+                inputs=document_inputs,
             )
         except ValidationError as exc:
             raise BusinessLogicException(f"Proposed version '{selected_version}' has invalid data: {exc}") from exc

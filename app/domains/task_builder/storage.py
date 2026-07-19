@@ -34,7 +34,11 @@ def extract_text(filename: str, content_type: Optional[str], content: bytes) -> 
 
 def upload_document(conversation_id: int, filename: str, content_type: Optional[str], content: bytes) -> str:
     """Uploads to GCS using the same ADC/service account as Vertex AI — no
-    separate credentials to manage on Cloud Run."""
+    separate credentials to manage on Cloud Run. Returns a public HTTPS URL:
+    TASK_BUILDER_GCS_BUCKET has allUsers:objectViewer granted at the bucket-IAM
+    level, so the object is viewable at this URL as soon as the upload
+    completes, no auth required — same convention as domains/task/storage.py's
+    submission files."""
     if not settings.TASK_BUILDER_GCS_BUCKET:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -56,4 +60,4 @@ def upload_document(conversation_id: int, filename: str, content_type: Optional[
             detail=f"Document upload to GCS failed: {exc}",
         ) from exc
 
-    return f"gs://{settings.TASK_BUILDER_GCS_BUCKET}/{blob_name}"
+    return f"https://storage.googleapis.com/{settings.TASK_BUILDER_GCS_BUCKET}/{blob_name}"

@@ -80,6 +80,12 @@ class FakeRepo:
     def get_location_distribution(self, **kwargs):
         return self._overview_values.get("location_rows", [])
 
+    def count_entry_level_postings(self, **kwargs):
+        return self._overview_values.get("entry_level_count", 0)
+
+    def get_salary_by_job_group(self, **kwargs):
+        return self._overview_values.get("salary_rows", [])
+
 # ---- _resolve_job_id ----
 
 def test_resolve_job_id_picks_best_skill_overlap():
@@ -260,6 +266,8 @@ def test_get_market_overview_combines_stats_chart_and_location_distribution():
         "weekly_counts": [(date(2026, 7, 6), 4), (date(2026, 7, 13), 6)],
         "yearly_avg": 2.5,
         "location_rows": [("Ho Chi Minh City", 15), ("Ha Noi", 10)],
+        "entry_level_count": 5,
+        "salary_rows": [("Backend Developer", 20_000_000.0, 30_000_000.0, 10)],
     })
     service = make_service(repo)
 
@@ -271,9 +279,13 @@ def test_get_market_overview_combines_stats_chart_and_location_distribution():
     assert overview["stats"]["skill_count"] == 8
     assert overview["stats"]["confidence"] == "LOW"
     assert overview["stats"]["growth_speed"] == "MODERATE"  # 0.25 growth is between MODERATE (0.15) and STRONG (0.30)
+    assert overview["stats"]["entry_level_ratio_percent"] == 20.0  # 5/25 * 100
     assert overview["chart"]["yearly_average_weekly_count"] == 2.5
     assert len(overview["chart"]["weekly_counts"]) == 2
     assert overview["location_distribution"][0]["location"] == "Ho Chi Minh City"
+    assert overview["salary_groups"] == [
+        {"job_title": "Backend Developer", "avg_salary_min": 20_000_000, "avg_salary_max": 30_000_000, "posting_count": 10},
+    ]
 
 def test_get_market_overview_handles_zero_previous_count_as_null_growth():
     repo = FakeRepo(overview_values={"job_postings_queue": [5, 0]})
@@ -283,6 +295,16 @@ def test_get_market_overview_handles_zero_previous_count_as_null_growth():
 
     assert overview["stats"]["mom_growth_rate"] is None
     assert overview["stats"]["growth_speed"] == "STABLE"
+
+def test_get_market_overview_entry_level_ratio_is_null_when_zero_postings():
+    """Guards against dividing by zero — 'no data' must stay null, not fake a 0%."""
+    repo = FakeRepo(overview_values={"job_postings_queue": [0, 0]})
+    service = make_service(repo)
+
+    overview = service.get_market_overview(days=30)
+
+    assert overview["stats"]["entry_level_ratio_percent"] is None
+    assert overview["salary_groups"] == []
 
 # ---- ingest_jobs: thin wrapper over _expand_and_resolve + bulk_create_jobs ----
 

@@ -162,8 +162,14 @@ class TaskInput(Base):
     description: Mapped[str] = mapped_column(String(1000))
     input_type: Mapped[TaskInputType] = mapped_column(SQLEnum(TaskInputType), default=TaskInputType.OTHER)
     # UI shows a lock icon on some inputs — read as "only released once the
-    # student has joined the task", not enforced here (no file storage yet).
+    # student has joined the task", not enforced here.
     is_restricted: Mapped[bool] = mapped_column(default=False)
+    # Public GCS URL when this input is a real file — populated automatically
+    # for inputs TaskBuilderService.generate_task copies over from the
+    # conversation's uploaded documents (see domains/task_builder/storage.py);
+    # null for inputs that are just a name/description with no attached file
+    # (e.g. a manually-created task's business-authored inputs).
+    storage_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
 
     task = relationship("Task", back_populates="inputs")
 
@@ -249,6 +255,10 @@ class TaskSubmission(Base):
         "TaskSubmissionFile", back_populates="submission",
         cascade="all, delete-orphan", order_by="TaskSubmissionFile.uploaded_at",
     )
+    enterprise_reviews = relationship(
+        "EnterpriseReview", back_populates="submission",
+        cascade="all, delete-orphan", order_by="EnterpriseReview.created_at",
+    )
 
 class TaskSubmissionFile(Base):
     """Metadata for one uploaded deliverable file (requirements.md §14) — the
@@ -284,3 +294,25 @@ class TaskSubmissionScore(Base):
 
     submission = relationship("TaskSubmission", back_populates="scores")
     criterion = relationship("TaskEvaluationCriterion")
+
+# Business-side decision on 1 submission (requirements.md BUS-12) — deliberately
+# separate from TaskReview (mentor decision on the Task itself) and
+# mentor_review (mentor decision on a submission, which DOES gate the state
+# machine). This is purely informational: BUS-12's constraint is "Không thay
+# Evidence" — creating one must never touch TaskSubmission.status or any
+# EvidenceClaim, see TaskService.create_enterprise_review.
+class EnterpriseReviewDecision(enum.Enum):
+    ACCEPTED = "ACCEPTED"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
+
+class EnterpriseReview(Base):
+    __tablename__ = "enterprise_reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    submission_id: Mapped[int] = mapped_column(ForeignKey("task_submissions.id"))
+    reviewed_by: Mapped[int] = mapped_column(Integer)  # business-side actor id, loose ref — no auth (see reviewer_id/mentor_id)
+    decision: Mapped[EnterpriseReviewDecision] = mapped_column(SQLEnum(EnterpriseReviewDecision))
+    comment: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+    submission = relationship("TaskSubmission", back_populates="enterprise_reviews")

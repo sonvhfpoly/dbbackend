@@ -11,7 +11,7 @@ from .schemas import (
     TaskSubmissionRead, TaskSubmissionScoreRead, TaskProgressRead,
     TaskComplexity, TaskReviewRequest, TaskReviewRead, TaskReviewStatus,
     RegisterSubmissionFileRequest, TaskSubmissionFileRead,
-    SetTaskSkillsRequest,
+    SetTaskSkillsRequest, EnterpriseReviewRequest, EnterpriseReviewRead,
 )
 from .service import TaskService
 from .models import SubmissionStatus
@@ -177,6 +177,25 @@ async def upload_submission_file(submission_id: int, file: UploadFile = File(...
 @router.get("/submissions/{submission_id}/files", response_model=List[TaskSubmissionFileRead], summary="List a submission's uploaded files")
 def list_submission_files(submission_id: int, db: Session = Depends(get_db)):
     return TaskService(db).list_submission_files(submission_id)
+
+@router.post(
+    "/submissions/{submission_id}/enterprise-review",
+    response_model=EnterpriseReviewRead,
+    summary="Business leaves feedback on a submission",
+    description="requirements.md BUS-12 — distinct from mentor-review: never changes the submission's status or "
+                "any EvidenceClaim ('Không thay Evidence'), purely a feedback record for the business's own "
+                "tracking (e.g. 'Chấp nhận'/'Yêu cầu chỉnh sửa' in the enterprise review screen).",
+)
+def create_enterprise_review(submission_id: int, request: EnterpriseReviewRequest, db: Session = Depends(get_db)):
+    return TaskService(db).create_enterprise_review(submission_id, request.reviewed_by, request.decision, request.comment)
+
+@router.get(
+    "/submissions/{submission_id}/enterprise-review",
+    response_model=List[EnterpriseReviewRead],
+    summary="List a submission's enterprise-review history",
+)
+def list_enterprise_reviews(submission_id: int, db: Session = Depends(get_db)):
+    return TaskService(db).list_enterprise_reviews(submission_id)
 
 @router.post("/submissions/{submission_id}/auto-check", response_model=TaskSubmissionRead, summary="Run the automated format/completeness check")
 def run_auto_check(
