@@ -31,9 +31,14 @@ from domains.student.schemas import (
 
 CAREER_RECOMMENDATION_SYSTEM_PROMPT = (
     "Bạn là hệ thống gợi ý nghề nghiệp có thể giải thích cho sinh viên. "
-    "Dựa CHỈ trên kỹ năng đã được xác thực của sinh viên (known_skills, mỗi kỹ năng có "
-    "level/confidence/evidence_count), lịch sử các task đã hoàn thành kèm kết quả đánh giá, "
-    "và catalog nghề nghiệp được cung cấp, hãy xếp hạng các nghề phù hợp. "
+    "Ưu tiên kỹ năng đã được xác thực của sinh viên (known_skills, mỗi kỹ năng có "
+    "level/confidence/evidence_count). Nếu known_skills rỗng, dùng skills trong các task "
+    "đã hoàn thành làm tín hiệu fallback; đây là kỹ năng mà task yêu cầu, chưa phải bằng chứng "
+    "mentor đã xác thực cho sinh viên, nên phải diễn đạt thận trọng và chấm điểm bảo thủ hơn. "
+    "Nếu cả known_skills và task skills đều rỗng nhưng có task đã hoàn thành, hãy suy luận từ "
+    "title, context, scope, output, tiêu chí, điểm và feedback của task; không được mô tả kỹ năng "
+    "suy luận này là đã được xác thực. "
+    "Kết hợp lịch sử task, kết quả đánh giá và catalog nghề nghiệp để xếp hạng nghề phù hợp. "
     "Không được tạo career_id hoặc kỹ năng ngoài catalog. Điểm score nằm trong [0,1]. "
     "Lý do phải nêu bằng chứng cụ thể từ task/kỹ năng; không được khẳng định đây là lựa chọn "
     "duy nhất hay chắc chắn. Viết rationale, strengths, gaps và next_steps bằng tiếng Việt. "
@@ -281,12 +286,12 @@ class StudentProfileService:
     ) -> list[StudentCareerRecommendation]:
         student = self.get_student(student_id)
         known_skills = self._known_skill_signals(student_id)
-        if not known_skills:
+        completed_tasks = self._completed_task_signals(student_id)
+        if not known_skills and not completed_tasks:
             raise BusinessLogicException(
-                "Sinh viên chưa có kỹ năng nào được xác thực (StudentSkillProfile) nên chưa đủ "
+                "Sinh viên chưa có kỹ năng được xác thực hoặc task đã hoàn thành nên chưa đủ "
                 "dữ liệu để gợi ý nghề nghiệp."
             )
-        completed_tasks = self._completed_task_signals(student_id)
 
         career_catalog = self._career_catalog()
         if not career_catalog:
@@ -382,13 +387,11 @@ class StudentProfileService:
         return recommendations
 
     def _known_skill_signals(self, student_id: int) -> list[dict]:
-        """The student's verified skill signal for career recommendation —
-        StudentSkillProfile only, same source of truth already used by
-        guidance/service.py._known_skill_ids and eportfolio/service.py's
-        _verified_skills. Deliberately NOT Task.skills (a task's own
-        declared/AI-linked catalog, unverified per student) — a task being
-        linked to "Python" doesn't mean this particular student actually
-        demonstrated it."""
+        """The preferred, verified skill signal for career recommendation.
+
+        Completed Task.skills are collected separately as an explicitly
+        unverified fallback in _completed_task_signals.
+        """
         profiles = self.list_student_skill_profiles(student_id)
         signals = []
         for profile in profiles:
@@ -415,9 +418,11 @@ class StudentProfileService:
         )
         signals = []
         for submission, task in rows:
+            criteria_by_id = {criterion.id: criterion.criterion for criterion in task.criteria}
             scores = [
                 {
-                    "criterion": score.criterion_id,
+                    "criterion_id": score.criterion_id,
+                    "criterion": criteria_by_id.get(score.criterion_id),
                     "score_percent": score.score_percent,
                     "feedback": score.feedback,
                 }
@@ -429,6 +434,27 @@ class StudentProfileService:
                     "title": task.title,
                     "context": task.context,
                     "complexity_level": task.complexity_level.value,
+                    "target_evidence_level": task.target_evidence_level.value,
+                    "scope_included": task.scope_included or [],
+                    "scope_excluded": task.scope_excluded or [],
+                    "outputs": [output.description for output in task.outputs],
+                    "evaluation_criteria": [
+                        {
+                            "criterion": criterion.criterion,
+                            "weight_percent": criterion.weight_percent,
+                        }
+                        for criterion in task.criteria
+                    ],
+                    "skills": [
+                        {
+                            "skill_id": skill.id,
+                            "skill_name": skill.name,
+                            "category": skill.category,
+                            "signal_source": "completed_task",
+                            "verified": False,
+                        }
+                        for skill in task.skills
+                    ],
                     "scores": scores,
                     "mentor_feedback": submission.mentor_feedback,
                     "student_reflection": submission.student_reflection,
